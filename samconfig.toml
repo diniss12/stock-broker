@@ -1,7 +1,7 @@
 version = 0.1
 
 [default.deploy.parameters]
-stack_name = "portolio-app"
+stack_name = "portfolio-app"
 resolve_s3 = true
 s3_prefix = "portfolio-app"
 region = "eu-west-1"
