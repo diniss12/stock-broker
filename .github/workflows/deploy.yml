@@ -1,0 +1,37 @@
+name: Deploy Portfolio Backend
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Instalar AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+
+      - name: Autenticar na AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::659791935620:role/GitHubActionsSAMDeployRole
+          aws-region: eu-west-1
+
+      - name: Build com SAM
+        run: sam build
+
+      - name: Deploy na AWS
+        run: sam deploy --no-confirm-changeset --no-fail-on-empty-changeset

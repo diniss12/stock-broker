@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Backend Serverless de Gestao de Carteira com Cognito Auth
+
+Globals:
+  Function:
+    Timeout: 10
+    MemorySize: 128
+    Runtime: python3.13
+    Architectures:
+      - arm64
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref PortfolioTable
+
+Resources:
+  # 1. Cognito User Pool (Autenticacao por Username)
+  PortfolioUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: PortfolioUserPool
+      UsernameConfiguration:
+        CaseSensitive: false
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: false
+          RequireNumbers: false
+          RequireSymbols: false
+          RequireUppercase: false
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+
+  # 2. Cognito User Pool Client (Para chamadas do Frontend / CLI)
+  PortfolioUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: PortfolioWebClient
+      UserPoolId: !Ref PortfolioUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  # 3. Base de Dados DynamoDB
+  PortfolioTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: PortfolioData
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  # 4. HTTP API Gateway com JWT Authorizer associado ao Cognito
+  PortfolioHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - "*"
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            IdentitySource: "$request.header.Authorization"
+            JwtConfiguration:
+              Audience:
+                - !Ref PortfolioUserPoolClient
+              Issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${PortfolioUserPool}"
+
+  # 5. Lambda Principal
+  PortfolioApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PortfolioTable
+      Events:
+        GetPortfolio:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PortfolioHttpApi
+            Path: /portfolio
+            Method: GET
+        PostTransaction:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PortfolioHttpApi
+            Path: /transaction
+            Method: POST
+
+Outputs:
+  ApiUrl:
+    Description: "URL base da API Gateway"
+    Value: !Sub "https://${PortfolioHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  UserPoolId:
+    Description: "ID do User Pool no Cognito"
+    Value: !Ref PortfolioUserPool
+  UserPoolClientId:
+    Description: "ID do Client da aplicacao no Cognito"
+    Value: !Ref PortfolioUserPoolClient

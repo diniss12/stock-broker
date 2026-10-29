@@ -1,0 +1,7 @@
+.dist/
+.aws-sam/
+__pycache__/
+*.pyc
+.env
+trust-policy.json
+sam-deploy-policy.json
