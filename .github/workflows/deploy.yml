@@ -29,6 +29,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::659791935620:role/GitHubActionsSAMDeployRole
           aws-region: eu-west-1
+          role-skip-session-tagging: true
 
       - name: Build com SAM
         run: sam build
