@@ -1,5 +1,6 @@
 import os
 import json
+import uuid
 import boto3
 from decimal import Decimal
 from datetime import datetime, timezone
@@ -48,11 +49,19 @@ def lambda_handler(event, context):
 
 def handle_post_transaction(user_id, raw_body):
     body = json.loads(raw_body or "{}")
-    ticker = body["ticker"].upper()
-    tx_type = body.get("type", "BUY").upper()
+    ticker = body["ticker"].upper().strip()
+    tx_type = body.get("type", "BUY").upper().strip()
     shares = Decimal(str(body["shares"]))
     price = Decimal(str(body["price"]))
+    
     now_iso = datetime.now(timezone.utc).isoformat()
+    today_str = now_iso[:10] # Formato YYYY-MM-DD
+    
+    # Se o utilizador enviar "date" (ex: "2024-05-15"), usa essa data; caso contrario, usa hoje
+    tx_date = body.get("date", today_str).strip()
+
+    if shares <= 0 or price < 0:
+        return response(400, {"error": "Quantidade e preco devem ser valores positivos"})
 
     pk = f"USER#{user_id}"
     pos_sk = f"POS#{ticker}"
@@ -62,44 +71,76 @@ def handle_post_transaction(user_id, raw_body):
     if current_pos:
         old_shares = current_pos["shares"]
         old_avg = current_pos["avg_cost"]
+        first_buy_date = current_pos.get("first_buy_date", tx_date)
+
         if tx_type == "BUY":
             new_shares = old_shares + shares
             new_avg = ((old_shares * old_avg) + (shares * price)) / new_shares
-        else: # SELL
+            if tx_date < first_buy_date:
+                first_buy_date = tx_date
+        elif tx_type == "SELL":
+            if shares > old_shares:
+                return response(400, {
+                    "error": f"Saldo insuficiente: tens {float(old_shares)} acoes de {ticker} para vender"
+                })
             new_shares = old_shares - shares
-            new_avg = old_avg
+            new_avg = old_avg if new_shares > 0 else Decimal("0")
+        else:
+            return response(400, {"error": "Tipo de transacao invalido (usa BUY ou SELL)"})
     else:
+        if tx_type == "SELL":
+            return response(400, {"error": f"Nao tens posicao aberta em {ticker} para vender"})
         new_shares = shares
         new_avg = price
+        first_buy_date = tx_date
 
+    # 1. Atualizar (ou remover se ficar a 0) a posicao agregada
+    if new_shares == 0:
+        table.delete_item(Key={"PK": pk, "SK": pos_sk})
+    else:
+        table.put_item(Item={
+            "PK": pk,
+            "SK": pos_sk,
+            "ticker": ticker,
+            "shares": new_shares,
+            "avg_cost": round(new_avg, 4),
+            "first_buy_date": first_buy_date,
+            "updated_at": now_iso
+        })
+
+    # 2. Guardar o registo da transacao ordenado pela data da operacao + ID unico curto
+    tx_id = uuid.uuid4().hex[:8]
     table.put_item(Item={
         "PK": pk,
-        "SK": pos_sk,
-        "ticker": ticker,
-        "shares": new_shares,
-        "avg_cost": round(new_avg, 4),
-        "updated_at": now_iso
-    })
-
-    table.put_item(Item={
-        "PK": pk,
-        "SK": f"TX#{now_iso}#{ticker}",
+        "SK": f"TX#{tx_date}#{ticker}#{tx_id}",
         "ticker": ticker,
         "type": tx_type,
         "shares": shares,
-        "price": price
+        "price": price,
+        "transaction_date": tx_date,
+        "created_at": now_iso
     })
 
-    table.put_item(Item={
-        "PK": "MARKET#PRICE",
-        "SK": f"TICKER#{ticker}",
-        "price": price,
-        "updated_at": now_iso
-    })
+    # 3. Atualizar o preco de referencia apenas se nao existir ou se a compra for recente
+    existing_market = table.get_item(
+        Key={"PK": "MARKET#PRICE", "SK": f"TICKER#{ticker}"}
+    ).get("Item")
+    
+    last_price_date = existing_market.get("price_date", "0000-00-00") if existing_market else "0000-00-00"
+    if tx_date >= last_price_date:
+        table.put_item(Item={
+            "PK": "MARKET#PRICE",
+            "SK": f"TICKER#{ticker}",
+            "price": price,
+            "price_date": tx_date,
+            "updated_at": now_iso
+        })
 
     return response(200, {
         "message": "Transacao registada com sucesso",
         "ticker": ticker,
+        "type": tx_type,
+        "transaction_date": tx_date,
         "total_shares": new_shares,
         "avg_cost": round(new_avg, 2)
     })
@@ -114,7 +155,14 @@ def handle_get_portfolio(user_id):
     items = res.get("Items", [])
 
     if not items:
-        return response(200, {"user_id": user_id, "total_value": 0, "positions": []})
+        return response(200, {
+            "user_id": user_id,
+            "total_value": 0,
+            "total_invested": 0,
+            "total_pnl_value": 0,
+            "total_pnl_pct": 0,
+            "positions": []
+        })
 
     positions = []
     total_portfolio_value = Decimal("0")
@@ -124,6 +172,7 @@ def handle_get_portfolio(user_id):
         ticker = item["ticker"]
         shares = item["shares"]
         avg_cost = item["avg_cost"]
+        first_buy_date = item.get("first_buy_date")
 
         price_item = table.get_item(
             Key={"PK": "MARKET#PRICE", "SK": f"TICKER#{ticker}"}
@@ -146,7 +195,8 @@ def handle_get_portfolio(user_id):
             "current_price": round(current_price, 2),
             "market_value": round(market_value, 2),
             "pnl_value": round(pnl_value, 2),
-            "pnl_pct": round(pnl_pct, 2)
+            "pnl_pct": round(pnl_pct, 2),
+            "first_buy_date": first_buy_date
         })
 
     for pos in positions:
