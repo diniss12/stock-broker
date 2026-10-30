@@ -1,4 +1,4 @@
-name: Deploy Portfolio Backend
+name: Deploy Portfolio App (Backend + Frontend)
 
 on:
   push:
@@ -21,6 +21,11 @@ jobs:
         with:
           python-version: '3.13'
 
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Instalar AWS SAM CLI
         uses: aws-actions/setup-sam@v2
 
@@ -35,5 +40,50 @@ jobs:
       - name: Build com SAM
         run: sam build
 
-      - name: Deploy na AWS
+      - name: Deploy da Infraestrutura com SAM
         run: sam deploy --no-confirm-changeset --no-fail-on-empty-changeset
+
+      - name: Extrair Outputs do CloudFormation
+        id: cf_outputs
+        run: |
+          BUCKET_NAME=$(aws cloudformation describe-stacks --stack-name portfolio-app --region eu-west-1 --query "Stacks[0].Outputs[?OutputKey=='FrontendBucketName'].OutputValue" --output text)
+          DISTRIBUTION_ID=$(aws cloudformation describe-stacks --stack-name portfolio-app --region eu-west-1 --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDistributionId'].OutputValue" --output text)
+          API_URL=$(aws cloudformation describe-stacks --stack-name portfolio-app --region eu-west-1 --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)
+          USER_POOL_ID=$(aws cloudformation describe-stacks --stack-name portfolio-app --region eu-west-1 --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" --output text)
+          CLIENT_ID=$(aws cloudformation describe-stacks --stack-name portfolio-app --region eu-west-1 --query "Stacks[0].Outputs[?OutputKey=='UserPoolClientId'].OutputValue" --output text)
+          FRONTEND_URL=$(aws cloudformation describe-stacks --stack-name portfolio-app --region eu-west-1 --query "Stacks[0].Outputs[?OutputKey=='FrontendUrl'].OutputValue" --output text)
+
+          echo "bucket=$BUCKET_NAME" >> $GITHUB_OUTPUT
+          echo "dist_id=$DISTRIBUTION_ID" >> $GITHUB_OUTPUT
+          echo "api_url=$API_URL" >> $GITHUB_OUTPUT
+          echo "user_pool_id=$USER_POOL_ID" >> $GITHUB_OUTPUT
+          echo "client_id=$CLIENT_ID" >> $GITHUB_OUTPUT
+          echo "frontend_url=$FRONTEND_URL" >> $GITHUB_OUTPUT
+
+      - name: Gerar ficheiro .env de Producao no Frontend
+        working-directory: frontend
+        run: |
+          cat <<EOF > .env
+          VITE_AWS_REGION=eu-west-1
+          VITE_USER_POOL_ID=${{ steps.cf_outputs.outputs.user_pool_id }}
+          VITE_USER_POOL_CLIENT_ID=${{ steps.cf_outputs.outputs.client_id }}
+          VITE_API_URL=${{ steps.cf_outputs.outputs.api_url }}
+          EOF
+
+      - name: Build do Frontend (Vite)
+        working-directory: frontend
+        run: |
+          npm ci || npm install
+          npm run build
+
+      - name: Upload dos assets para o S3
+        run: |
+          aws s3 sync frontend/dist s3://${{ steps.cf_outputs.outputs.bucket }} --delete
+
+      - name: Invalidar Cache do CloudFront
+        run: |
+          aws cloudfront create-invalidation --distribution-id ${{ steps.cf_outputs.outputs.dist_id }} --paths "/*"
+
+      - name: URL Publicado
+        run: |
+          echo "Frontend disponível em: ${{ steps.cf_outputs.outputs.frontend_url }}"

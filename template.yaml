@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Backend Serverless de Gestao de Carteira com Cognito Auth
+Description: Backend Serverless de Gestao de Carteira e Frontend Hosting com S3 e CloudFront
 
 Globals:
   Function:
@@ -15,7 +15,6 @@ Globals:
 
 Resources:
   # 1. Cognito User Pool (Autenticacao por Username)
-# 1. Cognito User Pool (Autenticacao por Username)
   PortfolioUserPool:
     Type: AWS::Cognito::UserPool
     Properties:
@@ -34,7 +33,7 @@ Resources:
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: false
 
-  # 2. Cognito User Pool Client (Para chamadas do Frontend / CLI)
+  # 2. Cognito User Pool Client
   PortfolioUserPoolClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
@@ -109,6 +108,80 @@ Resources:
             Path: /transaction
             Method: POST
 
+  # 6. Bucket S3 para hospedar os ficheiros compilados do Frontend
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "portfolio-web-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # 7. CloudFront Origin Access Control (OAC)
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "PortfolioOAC-${AWS::StackName}"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # 8. Distribuicao CloudFront
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Comment: "Distribuicao CloudFront para o Portfolio Web"
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+            S3OriginConfig: {}
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  # 9. Politica de Bucket S3 permitindo leitura exclusiva via CloudFront OAC
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipalReadOnly
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${FrontendBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}"
+
 Outputs:
   ApiUrl:
     Description: "URL base da API Gateway"
@@ -119,3 +192,12 @@ Outputs:
   UserPoolClientId:
     Description: "ID do Client da aplicacao no Cognito"
     Value: !Ref PortfolioUserPoolClient
+  FrontendBucketName:
+    Description: "Nome do Bucket S3 do Frontend"
+    Value: !Ref FrontendBucket
+  CloudFrontDistributionId:
+    Description: "ID da Distribuicao CloudFront"
+    Value: !Ref CloudFrontDistribution
+  FrontendUrl:
+    Description: "URL publico do Frontend (HTTPS)"
+    Value: !Sub "https://${CloudFrontDistribution.DomainName}"
