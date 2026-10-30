@@ -8,6 +8,12 @@ const MARKET_TICKERS = [
   { symbol: "GOOGL", name: "Alphabet", price: "184.60", change: "+0.92%", up: true },
   { symbol: "MSFT", name: "Microsoft", price: "428.50", change: "-0.38%", up: false },
   { symbol: "TSLA", name: "Tesla", price: "258.90", change: "-1.85%", up: false },
+  { symbol: "META", name: "Meta", price: "592.30", change: "+1.74%", up: true },
+  { symbol: "BRK.B", name: "Berkshire", price: "454.15", change: "+0.42%", up: true },
+  { symbol: "TSM", name: "TSMC", price: "196.80", change: "+3.10%", up: true },
+  { symbol: "AVGO", name: "Broadcom", price: "178.25", change: "-0.55%", up: false },
+  { symbol: "JPM", name: "JPMorgan", price: "229.70", change: "+0.88%", up: true },
+  { symbol: "V", name: "Visa", price: "291.40", change: "+0.31%", up: true },
 ];
 
 function StockLogo({ symbol }) {
@@ -89,6 +95,55 @@ function StockLogo({ symbol }) {
           />
         </svg>
       );
+    case "META":
+      return (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <rect width="24" height="24" rx="6" fill="#0668E1" fillOpacity="0.18" />
+          <path
+            d="M5 14.5C5 11 7 8.5 9.2 8.5C10.8 8.5 11.8 9.8 13.2 12.2C14.5 14.4 15.4 15.5 16.8 15.5C18.1 15.5 19 14.2 19 12C19 9.6 17.6 8.5 16.2 8.5C14.8 8.5 13.8 9.6 12 12.5C10.3 15.1 9.4 15.5 7.8 15.5C6.2 15.5 5 14.5 5 14.5Z"
+            stroke="#38BDF8"
+            strokeWidth="1.9"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
+    case "BRK.B":
+      return (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <rect width="24" height="24" rx="6" fill="#6366F1" fillOpacity="0.18" />
+          <text x="5" y="15.5" fill="#A5B4FC" fontSize="9.5" fontWeight="700" fontFamily="Inter, sans-serif">BH</text>
+        </svg>
+      );
+    case "TSM":
+      return (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <rect width="24" height="24" rx="6" fill="#EF4444" fillOpacity="0.16" />
+          <rect x="6.5" y="6.5" width="11" height="11" rx="2" stroke="#F87171" strokeWidth="1.8" />
+          <circle cx="12" cy="12" r="2.2" fill="#F87171" />
+        </svg>
+      );
+    case "AVGO":
+      return (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <rect width="24" height="24" rx="6" fill="#DC2626" fillOpacity="0.18" />
+          <path d="M5 14C8.5 14 9.5 8 12 8C14.5 8 15.5 14 19 14" stroke="#F87171" strokeWidth="2" strokeLinecap="round" />
+        </svg>
+      );
+    case "JPM":
+      return (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <rect width="24" height="24" rx="6" fill="#94A3B8" fillOpacity="0.16" />
+          <path d="M7 7H17V17H7V7Z" stroke="#CBD5E1" strokeWidth="1.6" />
+          <path d="M7 12H17M12 7V17" stroke="#CBD5E1" strokeWidth="1.4" />
+        </svg>
+      );
+    case "V":
+      return (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <rect width="24" height="24" rx="6" fill="#1D4ED8" fillOpacity="0.22" />
+          <path d="M7.5 8.5L10.8 16L14.2 8.5M14.8 8.5L16.8 16" stroke="#60A5FA" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
     default:
       return null;
   }
@@ -102,6 +157,9 @@ export default function Login({ onLoginSuccess }) {
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Duplicamos o array para que o loop de -50% a 0% seja infinito e sem cortes
+  const scrollingTickers = [...MARKET_TICKERS, ...MARKET_TICKERS];
 
   function switchMode(newMode) {
     setError("");
@@ -155,11 +213,11 @@ export default function Login({ onLoginSuccess }) {
 
   return (
     <div style={styles.viewport}>
-      {/* Barra de Cotações Aumentada no Topo com Logos */}
+      {/* Barra de Cotações Dinâmica em Loop Infinito para a Direita */}
       <header style={styles.tickerBar}>
-        <div style={styles.tickerInner}>
-          {MARKET_TICKERS.map((t) => (
-            <div key={t.symbol} style={styles.tickerItem}>
+        <div className="ticker-track">
+          {scrollingTickers.map((t, index) => (
+            <div key={`${t.symbol}-${index}`} style={styles.tickerItem}>
               <StockLogo symbol={t.symbol} />
               <span style={styles.tickerSymbol}>{t.symbol}</span>
               <span style={styles.tickerPrice}>${t.price}</span>
@@ -216,9 +274,8 @@ export default function Login({ onLoginSuccess }) {
           <line x1="1152" y1="0" x2="1152" y2="900" />
         </g>
 
-        {/* Candlesticks no fundo (Verdes Esmeralda e Vermelhos Escuros/Cinza) */}
+        {/* Candlesticks no fundo */}
         <g opacity="0.28">
-          {/* Esquerda */}
           <line x1="140" y1="520" x2="140" y2="670" stroke="#10b981" strokeWidth="3" />
           <rect x="128" y="550" width="24" height="80" rx="3" fill="#10b981" />
 
@@ -234,7 +291,6 @@ export default function Login({ onLoginSuccess }) {
           <line x1="400" y1="430" x2="400" y2="580" stroke="#10b981" strokeWidth="3" />
           <rect x="388" y="455" width="24" height="70" rx="3" fill="#10b981" />
 
-          {/* Direita */}
           <line x1="980" y1="320" x2="980" y2="480" stroke="#1f2937" strokeWidth="3" />
           <rect x="968" y="350" width="24" height="85" rx="3" fill="#18181b" stroke="#27272a" />
 
@@ -251,7 +307,7 @@ export default function Login({ onLoginSuccess }) {
           <rect x="1228" y="180" width="24" height="85" rx="3" fill="#10b981" />
         </g>
 
-        {/* Curva Principal de Tendência em Verde com Fade para Escuro */}
+        {/* Curva Principal de Tendência */}
         <path
           d="M-50 740 C 180 710, 290 540, 470 560 C 650 580, 740 390, 920 410 C 1100 430, 1200 220, 1490 170 L 1490 950 L -50 950 Z"
           fill="url(#greenChartArea)"
@@ -264,7 +320,6 @@ export default function Login({ onLoginSuccess }) {
           filter="url(#greenGlow)"
         />
 
-        {/* Linha tracejada secundária */}
         <path
           d="M-50 800 C 240 760, 430 650, 660 600 C 910 540, 1100 400, 1490 300"
           stroke="rgba(16, 185, 129, 0.22)"
@@ -273,10 +328,9 @@ export default function Login({ onLoginSuccess }) {
         />
       </svg>
 
-      {/* Área Principal: Moldura com Apresentação à Esquerda + Login à Direita */}
+      {/* Área Principal: Apresentação à Esquerda + Login à Direita */}
       <main style={styles.mainStage}>
         <div style={styles.outerGlassFrame}>
-          {/* Lado Esquerdo: Apresentação do Software */}
           <div style={styles.leftPresentation}>
             <div style={styles.brandRowLeft}>
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
@@ -341,7 +395,6 @@ export default function Login({ onLoginSuccess }) {
             </div>
           </div>
 
-          {/* Lado Direito: Box de Login */}
           <div style={styles.loginCard}>
             <h2 style={styles.heading}>
               {mode === "LOGIN" && "Iniciar Sessão"}
@@ -477,30 +530,23 @@ const styles = {
     zIndex: 2,
     width: "100%",
     height: "60px",
-    backgroundColor: "rgba(8, 12, 10, 0.88)",
+    backgroundColor: "rgba(8, 12, 10, 0.9)",
     backdropFilter: "blur(12px)",
-    borderBottom: "1px solid rgba(16, 185, 129, 0.14)",
+    borderBottom: "1px solid rgba(16, 185, 129, 0.16)",
     display: "flex",
     alignItems: "center",
-    justifyContent: "center",
-    padding: "0 2rem",
-  },
-  tickerInner: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    width: "100%",
-    maxWidth: "1260px",
-    gap: "1.5rem",
-    overflowX: "auto",
+    overflow: "hidden",
   },
   tickerItem: {
     display: "flex",
     alignItems: "center",
     gap: "0.65rem",
+    padding: "0 2.2rem",
+    borderRight: "1px solid rgba(255, 255, 255, 0.06)",
     fontFamily: "'JetBrains Mono', monospace",
     fontSize: "0.9rem",
     whiteSpace: "nowrap",
+    flexShrink: 0,
   },
   tickerSymbol: {
     fontWeight: 700,

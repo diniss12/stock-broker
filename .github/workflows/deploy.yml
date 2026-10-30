@@ -1,4 +1,4 @@
-name: Deploy Portfolio App (Backend + Frontend)
+name: Deploy Portfolio App
 
 on:
   push:
@@ -10,26 +10,38 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
+  # 1. Só corre se mexeres no backend ou na infraestrutura AWS
+  deploy-infra-backend:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout do repositorio
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      # Verifica se houve alteracoes no backend ou no template
+      - name: Verificar ficheiros alterados
+        id: check_changes
+        run: |
+          CHANGES=$(git diff --name-only HEAD~1 HEAD)
+          if echo "$CHANGES" | grep -qE '^(src/|template\.yaml)'; then
+            echo "run_sam=true" >> $GITHUB_OUTPUT
+          else
+            echo "run_sam=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Configurar Python
+        if: steps.check_changes.outputs.run_sam == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
 
-      - name: Configurar Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: Instalar AWS SAM CLI
+        if: steps.check_changes.outputs.run_sam == 'true'
         uses: aws-actions/setup-sam@v2
 
       - name: Autenticar na AWS via OIDC
+        if: steps.check_changes.outputs.run_sam == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::659791935620:role/GitHubActionsSAMDeployRole
@@ -38,52 +50,78 @@ jobs:
           role-skip-session-tagging: true
 
       - name: Build com SAM
+        if: steps.check_changes.outputs.run_sam == 'true'
         run: sam build
 
       - name: Deploy da Infraestrutura com SAM
+        if: steps.check_changes.outputs.run_sam == 'true'
         run: sam deploy --no-confirm-changeset --no-fail-on-empty-changeset
 
-      - name: Extrair Outputs do CloudFormation
+  # 2. Corre se mexeres no frontend (build + sync S3 em menos de 1 minuto)
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do repositorio
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Verificar se houve alteracoes no frontend
+        id: check_front
+        run: |
+          CHANGES=$(git diff --name-only HEAD~1 HEAD)
+          if echo "$CHANGES" | grep -qE '^frontend/'; then
+            echo "run_front=true" >> $GITHUB_OUTPUT
+          else
+            echo "run_front=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Configurar Node.js
+        if: steps.check_front.outputs.run_front == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Autenticar na AWS via OIDC
+        if: steps.check_front.outputs.run_front == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::659791935620:role/GitHubActionsSAMDeployRole
+          aws-region: eu-west-1
+          audience: sts.amazonaws.com
+          role-skip-session-tagging: true
+
+      - name: Obter IDs da AWS
+        if: steps.check_front.outputs.run_front == 'true'
         id: cf_outputs
         run: |
-          BUCKET_NAME=$(aws cloudformation describe-stacks --stack-name portfolio-app --region eu-west-1 --query "Stacks[0].Outputs[?OutputKey=='FrontendBucketName'].OutputValue" --output text)
-          DISTRIBUTION_ID=$(aws cloudformation describe-stacks --stack-name portfolio-app --region eu-west-1 --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDistributionId'].OutputValue" --output text)
+          BUCKET=$(aws cloudformation describe-stacks --stack-name portfolio-app --region eu-west-1 --query "Stacks[0].Outputs[?OutputKey=='FrontendBucketName'].OutputValue" --output text)
+          DIST_ID=$(aws cloudformation describe-stacks --stack-name portfolio-app --region eu-west-1 --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDistributionId'].OutputValue" --output text)
           API_URL=$(aws cloudformation describe-stacks --stack-name portfolio-app --region eu-west-1 --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)
-          USER_POOL_ID=$(aws cloudformation describe-stacks --stack-name portfolio-app --region eu-west-1 --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" --output text)
+          POOL_ID=$(aws cloudformation describe-stacks --stack-name portfolio-app --region eu-west-1 --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" --output text)
           CLIENT_ID=$(aws cloudformation describe-stacks --stack-name portfolio-app --region eu-west-1 --query "Stacks[0].Outputs[?OutputKey=='UserPoolClientId'].OutputValue" --output text)
-          FRONTEND_URL=$(aws cloudformation describe-stacks --stack-name portfolio-app --region eu-west-1 --query "Stacks[0].Outputs[?OutputKey=='FrontendUrl'].OutputValue" --output text)
 
-          echo "bucket=$BUCKET_NAME" >> $GITHUB_OUTPUT
-          echo "dist_id=$DISTRIBUTION_ID" >> $GITHUB_OUTPUT
+          echo "bucket=$BUCKET" >> $GITHUB_OUTPUT
+          echo "dist_id=$DIST_ID" >> $GITHUB_OUTPUT
           echo "api_url=$API_URL" >> $GITHUB_OUTPUT
-          echo "user_pool_id=$USER_POOL_ID" >> $GITHUB_OUTPUT
+          echo "pool_id=$POOL_ID" >> $GITHUB_OUTPUT
           echo "client_id=$CLIENT_ID" >> $GITHUB_OUTPUT
-          echo "frontend_url=$FRONTEND_URL" >> $GITHUB_OUTPUT
 
-      - name: Gerar ficheiro .env de Producao no Frontend
+      - name: Gerar .env e Build do Frontend
+        if: steps.check_front.outputs.run_front == 'true'
         working-directory: frontend
         run: |
           cat <<EOF > .env
           VITE_AWS_REGION=eu-west-1
-          VITE_USER_POOL_ID=${{ steps.cf_outputs.outputs.user_pool_id }}
+          VITE_USER_POOL_ID=${{ steps.cf_outputs.outputs.pool_id }}
           VITE_USER_POOL_CLIENT_ID=${{ steps.cf_outputs.outputs.client_id }}
           VITE_API_URL=${{ steps.cf_outputs.outputs.api_url }}
           EOF
-
-      - name: Build do Frontend (Vite)
-        working-directory: frontend
-        run: |
           npm ci || npm install
           npm run build
 
-      - name: Upload dos assets para o S3
+      - name: Sincronizar S3 e Invalidar CloudFront
+        if: steps.check_front.outputs.run_front == 'true'
         run: |
           aws s3 sync frontend/dist s3://${{ steps.cf_outputs.outputs.bucket }} --delete
-
-      - name: Invalidar Cache do CloudFront
-        run: |
           aws cloudfront create-invalidation --distribution-id ${{ steps.cf_outputs.outputs.dist_id }} --paths "/*"
-
-      - name: URL Publicado
-        run: |
-          echo "Frontend disponível em: ${{ steps.cf_outputs.outputs.frontend_url }}"
