@@ -15,32 +15,36 @@ Globals:
 
 Resources:
   # 1. Cognito User Pool (Autenticacao por Username)
-  PortfolioUserPool:
-    Type: AWS::Cognito::UserPool
-    Properties:
-      UserPoolName: PortfolioUserPool
-      UsernameConfiguration:
-        CaseSensitive: false
-      Policies:
-        PasswordPolicy:
-          MinimumLength: 8
-          RequireLowercase: false
-          RequireNumbers: false
-          RequireSymbols: false
-          RequireUppercase: false
-      AdminCreateUserConfig:
-        AllowAdminCreateUserOnly: false
+  # 1. Cognito User Pool (Autenticacao por Username)
+    PortfolioUserPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: PortfolioUserPool
+        AutoVerifiedAttributes:
+          - email
+        UsernameConfiguration:
+          CaseSensitive: false
+        Policies:
+          PasswordPolicy:
+            MinimumLength: 8
+            RequireLowercase: false
+            RequireNumbers: false
+            RequireSymbols: false
+            RequireUppercase: false
+        AdminCreateUserConfig:
+          AllowAdminCreateUserOnly: false
 
-  # 2. Cognito User Pool Client (Para chamadas do Frontend / CLI)
-  PortfolioUserPoolClient:
-    Type: AWS::Cognito::UserPoolClient
-    Properties:
-      ClientName: PortfolioWebClient
-      UserPoolId: !Ref PortfolioUserPool
-      GenerateSecret: false
-      ExplicitAuthFlows:
-        - ALLOW_USER_PASSWORD_AUTH
-        - ALLOW_REFRESH_TOKEN_AUTH
+    # 2. Cognito User Pool Client (Para chamadas do Frontend / CLI)
+    PortfolioUserPoolClient:
+      Type: AWS::Cognito::UserPoolClient
+      Properties:
+        ClientName: PortfolioWebClient
+        UserPoolId: !Ref PortfolioUserPool
+        GenerateSecret: false
+        ExplicitAuthFlows:
+          - ALLOW_USER_SRP_AUTH
+          - ALLOW_USER_PASSWORD_AUTH
+          - ALLOW_REFRESH_TOKEN_AUTH
 
   # 3. Base de Dados DynamoDB
   PortfolioTable:
