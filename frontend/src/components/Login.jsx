@@ -1,152 +1,41 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { signIn, signUp, confirmSignUp } from "aws-amplify/auth";
 
-const MARKET_TICKERS = [
-  { symbol: "NVDA", name: "NVIDIA", price: "142.85", change: "+2.45%", up: true },
-  { symbol: "AMZN", name: "Amazon", price: "210.40", change: "+1.18%", up: true },
-  { symbol: "AAPL", name: "Apple", price: "234.10", change: "-0.64%", up: false },
-  { symbol: "GOOGL", name: "Alphabet", price: "184.60", change: "+0.92%", up: true },
-  { symbol: "MSFT", name: "Microsoft", price: "428.50", change: "-0.38%", up: false },
-  { symbol: "TSLA", name: "Tesla", price: "258.90", change: "-1.85%", up: false },
-  { symbol: "META", name: "Meta", price: "592.30", change: "+1.74%", up: true },
-  { symbol: "BRK.B", name: "Berkshire", price: "454.15", change: "+0.42%", up: true },
-  { symbol: "TSM", name: "TSMC", price: "196.80", change: "+3.10%", up: true },
-  { symbol: "AVGO", name: "Broadcom", price: "178.25", change: "-0.55%", up: false },
-  { symbol: "JPM", name: "JPMorgan", price: "229.70", change: "+0.88%", up: true },
-  { symbol: "V", name: "Visa", price: "291.40", change: "+0.31%", up: true },
+const FALLBACK_TICKERS = [
+  { ticker: "NVDA", price: 142.85, change_pct: 2.45 },
+  { ticker: "AMZN", price: 210.40, change_pct: 1.18 },
+  { ticker: "AAPL", price: 234.10, change_pct: -0.64 },
+  { ticker: "GOOGL", price: 184.60, change_pct: 0.92 },
+  { ticker: "MSFT", price: 428.50, change_pct: -0.38 },
+  { ticker: "TSLA", price: 258.90, change_pct: -1.85 },
+  { ticker: "META", price: 592.30, change_pct: 1.74 },
+  { ticker: "BRK.B", price: 454.15, change_pct: 0.42 },
+  { ticker: "TSM", price: 196.80, change_pct: 3.10 },
+  { ticker: "AVGO", price: 178.25, change_pct: -0.55 },
+  { ticker: "JPM", price: 229.70, change_pct: 0.88 },
+  { ticker: "V", price: 291.40, change_pct: 0.31 },
 ];
 
-function StockLogo({ symbol }) {
-  switch (symbol) {
-    case "NVDA":
-      return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <rect width="24" height="24" rx="6" fill="#76B900" fillOpacity="0.18" />
-          <path
-            d="M5 12.5C7.2 8.5 12.5 7.5 16.5 10.5C14 13.5 9.8 14 7.5 12C9.5 10.2 12.8 10.5 14.2 11.8"
-            stroke="#76B900"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <circle cx="11.5" cy="11.5" r="1.5" fill="#76B900" />
-        </svg>
-      );
-    case "AMZN":
-      return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <rect width="24" height="24" rx="6" fill="#FF9900" fillOpacity="0.16" />
-          <path
-            d="M7.5 10.5C7.5 8.5 9.2 7.5 11.8 7.5C14.2 7.5 15.5 8.6 15.5 10.5V14.5M15.5 11.5C13 11.5 8.5 11.8 8.5 13.8C8.5 15 9.8 15.5 11.5 15.5C13.5 15.5 14.8 14.6 15.5 13.5"
-            stroke="#ffffff"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-          />
-          <path
-            d="M6.5 17C9.8 19.2 14.2 19.2 17.5 17M16 16.3L17.8 16.8L17.1 18.5"
-            stroke="#FF9900"
-            strokeWidth="1.7"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      );
-    case "AAPL":
-      return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <rect width="24" height="24" rx="6" fill="#ffffff" fillOpacity="0.12" />
-          <path
-            d="M15.2 13.2C15.2 11.4 16.6 10.5 16.7 10.4C15.8 9.1 14.5 8.9 14 8.9C12.9 8.8 11.8 9.6 11.2 9.6C10.6 9.6 9.7 8.9 8.8 8.9C7.5 8.9 6.4 9.7 5.8 10.8C4.5 13.1 5.5 16.5 6.7 18.2C7.3 19.1 8 20 9 20C9.9 20 10.3 19.4 11.4 19.4C12.5 19.4 12.8 20 13.8 20C14.8 20 15.4 19.1 16 18.2C16.7 17.2 17 16.2 17 16.1C16.9 16.1 15.2 15.4 15.2 13.2Z"
-            fill="#f8fafc"
-          />
-          <path
-            d="M13.2 7.3C13.7 6.7 14 5.8 13.9 5C13.1 5.1 12.2 5.5 11.7 6.1C11.2 6.6 10.8 7.5 10.9 8.3C11.8 8.4 12.7 7.9 13.2 7.3Z"
-            fill="#f8fafc"
-          />
-        </svg>
-      );
-    case "GOOGL":
-      return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <rect width="24" height="24" rx="6" fill="#4285F4" fillOpacity="0.15" />
-          <path
-            d="M12.2 11.2V13.2H16.6C16.3 15.1 14.6 16.5 12.2 16.5C9.5 16.5 7.3 14.3 7.3 11.6C7.3 8.9 9.5 6.7 12.2 6.7C13.5 6.7 14.6 7.2 15.5 8L17.1 6.4C15.8 5.2 14.1 4.5 12.2 4.5C8.3 4.5 5.1 7.7 5.1 11.6C5.1 15.5 8.3 18.7 12.2 18.7C16.3 18.7 19 15.8 19 11.8C19 11.5 18.9 11.3 18.9 11.2H12.2Z"
-            fill="#60A5FA"
-          />
-        </svg>
-      );
-    case "MSFT":
-      return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <rect width="24" height="24" rx="6" fill="#ffffff" fillOpacity="0.08" />
-          <rect x="5.5" y="5.5" width="5.8" height="5.8" fill="#F25022" />
-          <rect x="12.7" y="5.5" width="5.8" height="5.8" fill="#7FBA00" />
-          <rect x="5.5" y="12.7" width="5.8" height="5.8" fill="#00A4EF" />
-          <rect x="12.7" y="12.7" width="5.8" height="5.8" fill="#FFB900" />
-        </svg>
-      );
-    case "TSLA":
-      return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <rect width="24" height="24" rx="6" fill="#E82127" fillOpacity="0.18" />
-          <path
-            d="M5.5 7.2C8.5 6.3 15.5 6.3 18.5 7.2C18 8.2 17.2 8.6 16 8.7C14.8 8.4 13.5 8.3 12 8.3C10.5 8.3 9.2 8.4 8 8.7C6.8 8.6 6 8.2 5.5 7.2ZM12 9.5L9.8 10.2L12 18.5L14.2 10.2L12 9.5Z"
-            fill="#EF4444"
-          />
-        </svg>
-      );
-    case "META":
-      return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <rect width="24" height="24" rx="6" fill="#0668E1" fillOpacity="0.18" />
-          <path
-            d="M5 14.5C5 11 7 8.5 9.2 8.5C10.8 8.5 11.8 9.8 13.2 12.2C14.5 14.4 15.4 15.5 16.8 15.5C18.1 15.5 19 14.2 19 12C19 9.6 17.6 8.5 16.2 8.5C14.8 8.5 13.8 9.6 12 12.5C10.3 15.1 9.4 15.5 7.8 15.5C6.2 15.5 5 14.5 5 14.5Z"
-            stroke="#38BDF8"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-          />
-        </svg>
-      );
-    case "BRK.B":
-      return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <rect width="24" height="24" rx="6" fill="#6366F1" fillOpacity="0.18" />
-          <text x="5" y="15.5" fill="#A5B4FC" fontSize="9.5" fontWeight="700" fontFamily="Inter, sans-serif">BH</text>
-        </svg>
-      );
-    case "TSM":
-      return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <rect width="24" height="24" rx="6" fill="#EF4444" fillOpacity="0.16" />
-          <rect x="6.5" y="6.5" width="11" height="11" rx="2" stroke="#F87171" strokeWidth="1.8" />
-          <circle cx="12" cy="12" r="2.2" fill="#F87171" />
-        </svg>
-      );
-    case "AVGO":
-      return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <rect width="24" height="24" rx="6" fill="#DC2626" fillOpacity="0.18" />
-          <path d="M5 14C8.5 14 9.5 8 12 8C14.5 8 15.5 14 19 14" stroke="#F87171" strokeWidth="2" strokeLinecap="round" />
-        </svg>
-      );
-    case "JPM":
-      return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <rect width="24" height="24" rx="6" fill="#94A3B8" fillOpacity="0.16" />
-          <path d="M7 7H17V17H7V7Z" stroke="#CBD5E1" strokeWidth="1.6" />
-          <path d="M7 12H17M12 7V17" stroke="#CBD5E1" strokeWidth="1.4" />
-        </svg>
-      );
-    case "V":
-      return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <rect width="24" height="24" rx="6" fill="#1D4ED8" fillOpacity="0.22" />
-          <path d="M7.5 8.5L10.8 16L14.2 8.5M14.8 8.5L16.8 16" stroke="#60A5FA" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      );
-    default:
-      return null;
-  }
+const API_BASE_URL =
+  import.meta.env.VITE_API_URL ||
+  "https://7yu2kb0zrj.execute-api.eu-west-1.amazonaws.com";
+
+function StockLogo({ ticker }) {
+  const cleanTicker = encodeURIComponent(ticker);
+  const primarySrc = `https://assets.parqet.com/logos/symbol/${cleanTicker}?format=png`;
+  const fallbackSrc = `https://ui-avatars.com/api/?name=${cleanTicker}&background=27272a&color=fafafa&size=64&font-size=0.4&bold=true`;
+
+  return (
+    <img
+      src={primarySrc}
+      alt={ticker}
+      style={styles.tickerLogo}
+      onError={(e) => {
+        e.currentTarget.onerror = null;
+        e.currentTarget.src = fallbackSrc;
+      }}
+    />
+  );
 }
 
 export default function Login({ onLoginSuccess }) {
@@ -157,9 +46,59 @@ export default function Login({ onLoginSuccess }) {
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [marketTickers, setMarketTickers] = useState(FALLBACK_TICKERS);
 
-  // Duplicamos o array para que o loop de -50% a 0% seja infinito e sem cortes
-  const scrollingTickers = [...MARKET_TICKERS, ...MARKET_TICKERS];
+  useEffect(() => {
+    let active = true;
+
+    async function loadMarketFromDb() {
+      try {
+        const res = await fetch(`${API_BASE_URL}/market`);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (active && Array.isArray(data.tickers) && data.tickers.length > 0) {
+          // Mescla os dados vindos da DynamoDB com a lista base para garantir a barra sempre cheia
+          const dbMap = {};
+          for (const item of data.tickers) {
+            const symbol = item.ticker || (item.SK ? item.SK.replace("TICKER#", "") : null);
+            if (symbol) {
+              dbMap[symbol] = {
+                ticker: symbol,
+                price: Number(item.price || 0),
+                change_pct: Number(item.change_pct ?? 0),
+              };
+            }
+          }
+
+          const merged = FALLBACK_TICKERS.map((defaultItem) =>
+            dbMap[defaultItem.ticker] ? dbMap[defaultItem.ticker] : defaultItem
+          );
+
+          // Adiciona outros tickers extra que os utilizadores tenham adicionado à base de dados
+          for (const symbol of Object.keys(dbMap)) {
+            if (!merged.some((m) => m.ticker === symbol)) {
+              merged.push(dbMap[symbol]);
+            }
+          }
+
+          setMarketTickers(merged);
+        }
+      } catch (err) {
+        console.error("Erro ao carregar cache de mercado:", err);
+      }
+    }
+
+    loadMarketFromDb();
+    const interval = setInterval(loadMarketFromDb, 60000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Duplicamos o array para que o loop contínuo de -50% a 0% seja infinito
+  const scrollingTickers = [...marketTickers, ...marketTickers];
 
   function switchMode(newMode) {
     setError("");
@@ -213,31 +152,38 @@ export default function Login({ onLoginSuccess }) {
 
   return (
     <div style={styles.viewport}>
-      {/* Barra de Cotações Dinâmica em Loop Infinito para a Direita */}
+      {/* Barra de Cotações Dinâmica ligada à DynamoDB */}
       <header style={styles.tickerBar}>
         <div className="ticker-track">
-          {scrollingTickers.map((t, index) => (
-            <div key={`${t.symbol}-${index}`} style={styles.tickerItem}>
-              <StockLogo symbol={t.symbol} />
-              <span style={styles.tickerSymbol}>{t.symbol}</span>
-              <span style={styles.tickerPrice}>${t.price}</span>
-              <span
-                style={{
-                  ...styles.tickerChange,
-                  color: t.up ? "#10b981" : "#ef4444",
-                  backgroundColor: t.up
-                    ? "rgba(16, 185, 129, 0.14)"
-                    : "rgba(239, 68, 68, 0.14)",
-                }}
-              >
-                {t.up ? "▲" : "▼"} {t.change}
-              </span>
-            </div>
-          ))}
+          {scrollingTickers.map((t, index) => {
+            const pct = Number(t.change_pct || 0);
+            const isUp = pct >= 0;
+            const formattedPrice = Number(t.price || 0).toFixed(2);
+            const formattedPct = `${isUp ? "+" : ""}${pct.toFixed(2)}%`;
+
+            return (
+              <div key={`${t.ticker}-${index}`} style={styles.tickerItem}>
+                <StockLogo ticker={t.ticker} />
+                <span style={styles.tickerSymbol}>{t.ticker}</span>
+                <span style={styles.tickerPrice}>${formattedPrice}</span>
+                <span
+                  style={{
+                    ...styles.tickerChange,
+                    color: isUp ? "#10b981" : "#ef4444",
+                    backgroundColor: isUp
+                      ? "rgba(16, 185, 129, 0.14)"
+                      : "rgba(239, 68, 68, 0.14)",
+                  }}
+                >
+                  {isUp ? "▲" : "▼"} {formattedPct}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </header>
 
-      {/* Fundo com Gráficos e Candlesticks em Verde Esmeralda com Fade para Preto */}
+      {/* Fundo com Gráficos e Candlesticks */}
       <svg
         viewBox="0 0 1440 900"
         fill="none"
@@ -262,7 +208,6 @@ export default function Login({ onLoginSuccess }) {
           </filter>
         </defs>
 
-        {/* Grelha escura subtil */}
         <g stroke="rgba(255,255,255,0.03)" strokeWidth="1">
           <line x1="0" y1="180" x2="1440" y2="180" />
           <line x1="0" y1="360" x2="1440" y2="360" />
@@ -274,7 +219,6 @@ export default function Login({ onLoginSuccess }) {
           <line x1="1152" y1="0" x2="1152" y2="900" />
         </g>
 
-        {/* Candlesticks no fundo */}
         <g opacity="0.28">
           <line x1="140" y1="520" x2="140" y2="670" stroke="#10b981" strokeWidth="3" />
           <rect x="128" y="550" width="24" height="80" rx="3" fill="#10b981" />
@@ -307,7 +251,6 @@ export default function Login({ onLoginSuccess }) {
           <rect x="1228" y="180" width="24" height="85" rx="3" fill="#10b981" />
         </g>
 
-        {/* Curva Principal de Tendência */}
         <path
           d="M-50 740 C 180 710, 290 540, 470 560 C 650 580, 740 390, 920 410 C 1100 430, 1200 220, 1490 170 L 1490 950 L -50 950 Z"
           fill="url(#greenChartArea)"
@@ -319,7 +262,6 @@ export default function Login({ onLoginSuccess }) {
           strokeLinecap="round"
           filter="url(#greenGlow)"
         />
-
         <path
           d="M-50 800 C 240 760, 430 650, 660 600 C 910 540, 1100 400, 1490 300"
           stroke="rgba(16, 185, 129, 0.22)"
@@ -328,7 +270,7 @@ export default function Login({ onLoginSuccess }) {
         />
       </svg>
 
-      {/* Área Principal: Apresentação à Esquerda + Login à Direita */}
+      {/* Área Central */}
       <main style={styles.mainStage}>
         <div style={styles.outerGlassFrame}>
           <div style={styles.leftPresentation}>
@@ -482,7 +424,7 @@ export default function Login({ onLoginSuccess }) {
               </button>
             </form>
 
-            <div style={styles.footer}>
+            <div style={styles.cardFooter}>
               {mode === "LOGIN" ? (
                 <span>
                   Ainda não tens conta?{" "}
@@ -510,6 +452,17 @@ export default function Login({ onLoginSuccess }) {
           </div>
         </div>
       </main>
+
+      {/* Rodapé Técnico Maior */}
+      <footer style={styles.pageFooter}>
+        <div style={styles.pageFooterLeft}>
+          <span style={styles.liveDot} />
+          <span>DADOS DE MERCADO SINCRONIZADOS // FINNHUB & AWS DYNAMODB</span>
+        </div>
+        <div style={styles.pageFooterRight}>
+          <span>STOCKBROKER CLOUD ARCHITECTURE</span>
+        </div>
+      </footer>
     </div>
   );
 }
@@ -521,6 +474,7 @@ const styles = {
     minHeight: "100vh",
     display: "flex",
     flexDirection: "column",
+    justifyContent: "space-between",
     background: "radial-gradient(circle at 50% 35%, #0c1814 0%, #070b09 55%, #030504 100%)",
     overflow: "hidden",
     fontFamily: "'Inter', sans-serif",
@@ -529,10 +483,10 @@ const styles = {
     position: "relative",
     zIndex: 2,
     width: "100%",
-    height: "60px",
-    backgroundColor: "rgba(8, 12, 10, 0.9)",
+    height: "68px",
+    backgroundColor: "rgba(8, 12, 10, 0.92)",
     backdropFilter: "blur(12px)",
-    borderBottom: "1px solid rgba(16, 185, 129, 0.16)",
+    borderBottom: "1px solid rgba(16, 185, 129, 0.18)",
     display: "flex",
     alignItems: "center",
     overflow: "hidden",
@@ -540,30 +494,40 @@ const styles = {
   tickerItem: {
     display: "flex",
     alignItems: "center",
-    gap: "0.65rem",
-    padding: "0 2.2rem",
-    borderRight: "1px solid rgba(255, 255, 255, 0.06)",
+    gap: "0.75rem",
+    padding: "0 2.4rem",
+    borderRight: "1px solid rgba(255, 255, 255, 0.07)",
     fontFamily: "'JetBrains Mono', monospace",
-    fontSize: "0.9rem",
+    fontSize: "0.95rem",
     whiteSpace: "nowrap",
+    flexShrink: 0,
+  },
+  tickerLogo: {
+    width: "28px",
+    height: "28px",
+    borderRadius: "6px",
+    backgroundColor: "#18181b",
+    border: "1px solid rgba(255, 255, 255, 0.1)",
+    objectFit: "contain",
+    padding: "2px",
     flexShrink: 0,
   },
   tickerSymbol: {
     fontWeight: 700,
     color: "#f8fafc",
     letterSpacing: "0.02em",
-    fontSize: "0.92rem",
+    fontSize: "0.96rem",
   },
   tickerPrice: {
     color: "#cbd5e1",
     fontWeight: 500,
-    fontSize: "0.9rem",
+    fontSize: "0.94rem",
   },
   tickerChange: {
-    padding: "0.22rem 0.55rem",
-    borderRadius: "5px",
+    padding: "0.24rem 0.6rem",
+    borderRadius: "6px",
     fontWeight: 600,
-    fontSize: "0.8rem",
+    fontSize: "0.84rem",
   },
   bgSvg: {
     position: "absolute",
@@ -662,9 +626,9 @@ const styles = {
   },
   loginCard: {
     width: "100%",
-    maxWidth: "390px",
+    maxWidth: "400px",
     justifySelf: "end",
-    padding: "2.4rem 2.2rem",
+    padding: "2.5rem 2.3rem",
     borderRadius: "16px",
     backgroundColor: "rgba(255, 255, 255, 0.04)",
     backdropFilter: "blur(24px)",
@@ -673,16 +637,16 @@ const styles = {
     boxShadow: "0 20px 50px rgba(0, 0, 0, 0.65)",
   },
   heading: {
-    fontSize: "1.4rem",
+    fontSize: "1.45rem",
     fontWeight: 600,
     letterSpacing: "-0.02em",
     color: "#ffffff",
     marginBottom: "0.35rem",
   },
   subHeading: {
-    fontSize: "0.82rem",
+    fontSize: "0.85rem",
     color: "#a1a1aa",
-    marginBottom: "1.4rem",
+    marginBottom: "1.45rem",
     lineHeight: 1.4,
   },
   errorBox: {
@@ -707,7 +671,7 @@ const styles = {
   },
   label: {
     fontFamily: "'JetBrains Mono', monospace",
-    fontSize: "0.72rem",
+    fontSize: "0.74rem",
     fontWeight: 500,
     letterSpacing: "0.04em",
     textTransform: "uppercase",
@@ -715,47 +679,82 @@ const styles = {
   },
   input: {
     width: "100%",
-    height: "42px",
+    height: "44px",
     padding: "0 0.9rem",
     backgroundColor: "#ffffff",
     color: "#090a0f",
     fontFamily: "'Inter', sans-serif",
-    fontSize: "0.92rem",
+    fontSize: "0.94rem",
     border: "none",
     borderRadius: "7px",
   },
   confirmText: {
-    fontSize: "0.84rem",
+    fontSize: "0.86rem",
     color: "#e4e4e7",
     marginBottom: "0.5rem",
     lineHeight: 1.45,
   },
   submitBtn: {
     marginTop: "0.5rem",
-    height: "44px",
+    height: "46px",
     backgroundColor: "#059669",
     color: "#ffffff",
     border: "1px solid rgba(16, 185, 129, 0.4)",
     borderRadius: "7px",
-    fontSize: "0.9rem",
+    fontSize: "0.94rem",
     fontWeight: 600,
     cursor: "pointer",
     transition: "background-color 0.15s ease",
   },
-  footer: {
-    marginTop: "1.4rem",
+  cardFooter: {
+    marginTop: "1.75rem",
+    paddingTop: "1.2rem",
+    borderTop: "1px solid rgba(255, 255, 255, 0.08)",
     textAlign: "center",
-    fontSize: "0.8rem",
-    color: "#a1a1aa",
+    fontSize: "0.95rem",
+    color: "#cbd5e1",
   },
   linkBtn: {
     background: "none",
     border: "none",
     color: "#10b981",
     fontWeight: 600,
-    fontSize: "0.8rem",
+    fontSize: "0.95rem",
     cursor: "pointer",
     textDecoration: "underline",
-    textUnderlineOffset: "3px",
+    textUnderlineOffset: "4px",
+    marginLeft: "0.25rem",
+  },
+  pageFooter: {
+    position: "relative",
+    zIndex: 2,
+    width: "100%",
+    padding: "1.15rem 2.5rem",
+    backgroundColor: "rgba(6, 10, 8, 0.88)",
+    backdropFilter: "blur(10px)",
+    borderTop: "1px solid rgba(16, 185, 129, 0.16)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: "0.85rem",
+    color: "#94a3b8",
+    letterSpacing: "0.03em",
+  },
+  pageFooterLeft: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.65rem",
+  },
+  liveDot: {
+    width: "8px",
+    height: "8px",
+    borderRadius: "50%",
+    backgroundColor: "#10b981",
+    boxShadow: "0 0 8px #10b981",
+  },
+  pageFooterRight: {
+    color: "#64748b",
+    fontWeight: 600,
   },
 };
