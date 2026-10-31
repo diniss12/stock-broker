@@ -85,16 +85,25 @@ Resources:
                 - !Ref PortfolioUserPoolClient
               Issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${PortfolioUserPool}"
 
-  # 5. Lambda Principal
+# 5. Lambda Principal
   PortfolioApiFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: src/
       Handler: app.lambda_handler
+      Timeout: 25
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref PortfolioTable
       Events:
+        GetMarket:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PortfolioHttpApi
+            Path: /market
+            Method: GET
+            Auth:
+              Authorizer: NONE
         GetPortfolio:
           Type: HttpApi
           Properties:
@@ -107,7 +116,11 @@ Resources:
             ApiId: !Ref PortfolioHttpApi
             Path: /transaction
             Method: POST
-
+        MarketUpdateSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Description: Atualiza precos das acoes na DynamoDB via Finnhub a cada 5 minutos
   # 6. Bucket S3 para hospedar os ficheiros compilados do Frontend
   FrontendBucket:
     Type: AWS::S3::Bucket
