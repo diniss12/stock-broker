@@ -58,7 +58,6 @@ export default function Login({ onLoginSuccess }) {
         const data = await res.json();
 
         if (active && Array.isArray(data.tickers) && data.tickers.length > 0) {
-          // Mescla os dados vindos da DynamoDB com a lista base para garantir a barra sempre cheia
           const dbMap = {};
           for (const item of data.tickers) {
             const symbol = item.ticker || (item.SK ? item.SK.replace("TICKER#", "") : null);
@@ -75,7 +74,6 @@ export default function Login({ onLoginSuccess }) {
             dbMap[defaultItem.ticker] ? dbMap[defaultItem.ticker] : defaultItem
           );
 
-          // Adiciona outros tickers extra que os utilizadores tenham adicionado à base de dados
           for (const symbol of Object.keys(dbMap)) {
             if (!merged.some((m) => m.ticker === symbol)) {
               merged.push(dbMap[symbol]);
@@ -90,14 +88,13 @@ export default function Login({ onLoginSuccess }) {
     }
 
     loadMarketFromDb();
-    const interval = setInterval(loadMarketFromDb, 60000);
+    const interval = setInterval(loadMarketFromDb, 180000);
     return () => {
       active = false;
       clearInterval(interval);
     };
   }, []);
 
-  // Duplicamos o array para que o loop contínuo de -50% a 0% seja infinito
   const scrollingTickers = [...marketTickers, ...marketTickers];
 
   function switchMode(newMode) {
@@ -152,7 +149,7 @@ export default function Login({ onLoginSuccess }) {
 
   return (
     <div style={styles.viewport}>
-      {/* Barra de Cotações Dinâmica ligada à DynamoDB */}
+      {/* Barra de Cotações Dinâmica */}
       <header style={styles.tickerBar}>
         <div className="ticker-track">
           {scrollingTickers.map((t, index) => {
@@ -262,6 +259,7 @@ export default function Login({ onLoginSuccess }) {
           strokeLinecap="round"
           filter="url(#greenGlow)"
         />
+
         <path
           d="M-50 800 C 240 760, 430 650, 660 600 C 910 540, 1100 400, 1490 300"
           stroke="rgba(16, 185, 129, 0.22)"
@@ -452,17 +450,6 @@ export default function Login({ onLoginSuccess }) {
           </div>
         </div>
       </main>
-
-      {/* Rodapé Técnico Maior */}
-      <footer style={styles.pageFooter}>
-        <div style={styles.pageFooterLeft}>
-          <span style={styles.liveDot} />
-          <span>DADOS DE MERCADO SINCRONIZADOS // FINNHUB & AWS DYNAMODB</span>
-        </div>
-        <div style={styles.pageFooterRight}>
-          <span>STOCKBROKER CLOUD ARCHITECTURE</span>
-        </div>
-      </footer>
     </div>
   );
 }
@@ -474,7 +461,6 @@ const styles = {
     minHeight: "100vh",
     display: "flex",
     flexDirection: "column",
-    justifyContent: "space-between",
     background: "radial-gradient(circle at 50% 35%, #0c1814 0%, #070b09 55%, #030504 100%)",
     overflow: "hidden",
     fontFamily: "'Inter', sans-serif",
@@ -724,37 +710,5 @@ const styles = {
     textDecoration: "underline",
     textUnderlineOffset: "4px",
     marginLeft: "0.25rem",
-  },
-  pageFooter: {
-    position: "relative",
-    zIndex: 2,
-    width: "100%",
-    padding: "1.15rem 2.5rem",
-    backgroundColor: "rgba(6, 10, 8, 0.88)",
-    backdropFilter: "blur(10px)",
-    borderTop: "1px solid rgba(16, 185, 129, 0.16)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    fontFamily: "'JetBrains Mono', monospace",
-    fontSize: "0.85rem",
-    color: "#94a3b8",
-    letterSpacing: "0.03em",
-  },
-  pageFooterLeft: {
-    display: "flex",
-    alignItems: "center",
-    gap: "0.65rem",
-  },
-  liveDot: {
-    width: "8px",
-    height: "8px",
-    borderRadius: "50%",
-    backgroundColor: "#10b981",
-    boxShadow: "0 0 8px #10b981",
-  },
-  pageFooterRight: {
-    color: "#64748b",
-    fontWeight: 600,
   },
 };

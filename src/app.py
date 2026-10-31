@@ -1,10 +1,11 @@
 import os
+import re
 import json
 import time
 import uuid
 import urllib.request
 import boto3
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from boto3.dynamodb.conditions import Key
 
@@ -19,6 +20,9 @@ DEFAULT_TICKERS = [
     "NVDA", "AMZN", "AAPL", "GOOGL", "MSFT", "TSLA",
     "META", "BRK.B", "TSM", "AVGO", "JPM", "V"
 ]
+
+# Regex defensiva: apenas 1 a 6 letras maiúsculas, com sufixo de classe opcional (.A, .B)
+TICKER_REGEX = re.compile(r"^[A-Z]{1,6}(\.[A-Z]{1,2})?$")
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -40,11 +44,82 @@ def response(status_code, body):
 
 
 # ==========================================
+# VALIDAÇÃO DEFENSIVA DE INPUTS
+# ==========================================
+
+def validate_transaction_payload(raw_body):
+    """
+    Sanitiza e valida rigorosamente todos os campos de entrada,
+    impedindo corrupção de Sort Keys no DynamoDB e exceções 500 no runtime.
+    """
+    if not raw_body:
+        return False, "O corpo do pedido não pode estar vazio."
+
+    try:
+        body = json.loads(raw_body)
+    except Exception:
+        return False, "Formato JSON inválido."
+
+    # 1. Campos obrigatórios
+    required_fields = ["ticker", "shares", "price"]
+    for field in required_fields:
+        if field not in body:
+            return False, f"Campo obrigatório em falta: '{field}'."
+
+    # 2. Sanitização e validação de Ticker
+    raw_ticker = str(body["ticker"]).upper().strip()
+    if not TICKER_REGEX.match(raw_ticker):
+        return False, "Ticker inválido. Usa apenas letras (ex: NVDA, AAPL, BRK.B) até 6 caracteres."
+
+    # 3. Tipo de transação
+    tx_type = str(body.get("type", "BUY")).upper().strip()
+    if tx_type not in ("BUY", "SELL"):
+        return False, "Tipo de transação inválido. Usa 'BUY' ou 'SELL'."
+
+    # 4. Parsing numérico seguro com limites de grandeza
+    try:
+        shares = Decimal(str(body["shares"]))
+        price = Decimal(str(body["price"]))
+    except (InvalidOperation, TypeError, ValueError):
+        return False, "Os campos 'shares' e 'price' devem ser números válidos."
+
+    if shares <= 0:
+        return False, "A quantidade de ações (shares) deve ser maior que 0."
+    if price < 0:
+        return False, "O preço unitário não pode ser negativo."
+    if shares > Decimal("1000000000") or price > Decimal("10000000"):
+        return False, "Valores de quantidade ou preço fora dos limites suportados."
+
+    # 5. Validação rigorosa de Data (formato YYYY-MM-DD e sem datas futuras)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    today_str = now_iso[:10]
+    tx_date = str(body.get("date", today_str)).strip()
+
+    try:
+        parsed_date = datetime.strptime(tx_date, "%Y-%m-%d").date()
+        today_date = datetime.now(timezone.utc).date()
+        if parsed_date > today_date:
+            return False, "A data da operação não pode ser futura."
+    except ValueError:
+        return False, "Formato de data inválido. Usa rigorosamente o padrão YYYY-MM-DD."
+
+    return True, {
+        "ticker": raw_ticker,
+        "type": tx_type,
+        "shares": shares,
+        "price": price,
+        "date": tx_date,
+    }
+
+
+# ==========================================
 # FUNÇÕES DE MERCADO E CACHE (FINNHUB)
 # ==========================================
 
 def fetch_finnhub_quote(ticker: str) -> dict | None:
     """Busca o preço atual, fecho anterior e variação diária na Finnhub."""
+    # Garante ticker limpo antes da chamada externa
+    ticker = ticker.upper().strip()
     url = f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_API_KEY}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "StockBrokerApp/1.0"})
@@ -95,6 +170,9 @@ def get_tracked_tickers() -> list[str]:
 def ensure_ticker_tracked(ticker: str, fallback_price: Decimal | None = None) -> dict | None:
     """Garante que o ticker está na lista global e tem preço na cache MARKET#PRICE."""
     ticker = ticker.upper().strip()
+    if not TICKER_REGEX.match(ticker):
+        return None
+
     tracked = get_tracked_tickers()
     if ticker not in tracked:
         tracked.append(ticker)
@@ -163,7 +241,6 @@ def handle_get_market():
     )
     items = res.get("Items", [])
 
-    # Se a tabela ainda estiver vazia no primeiro arranque, popula agora
     if not items:
         market_updater_handler({}, None)
         res = table.query(
@@ -179,17 +256,16 @@ def handle_get_market():
 # ==========================================
 
 def lambda_handler(event, context):
-    # Se for invocado pelo EventBridge agendado, corre o atualizador de mercado
     if event.get("source") == "aws.events" or event.get("action") == "UPDATE_MARKET":
         return market_updater_handler(event, context)
 
     route_key = event.get("routeKey")
 
-    # Rota pública (não precisa de JWT): barra de ações do Login
+    # Rota pública sem autenticação
     if route_key == "GET /market":
         return handle_get_market()
 
-    # Extrai as claims do token JWT validadas pelo API Gateway
+    # Extrai as claims validadas pelo API Gateway
     claims = (
         event.get("requestContext", {})
         .get("authorizer", {})
@@ -200,14 +276,14 @@ def lambda_handler(event, context):
     user_id = claims.get("sub") or claims.get("cognito:username")
 
     if not user_id:
-        return response(401, {"error": "Nao autorizado: token em falta ou invalido"})
+        return response(401, {"error": "Não autorizado: token em falta ou inválido."})
 
     if route_key == "POST /transaction":
         return handle_post_transaction(user_id, event.get("body"))
     elif route_key == "GET /portfolio":
         return handle_get_portfolio(user_id)
 
-    return response(404, {"error": "Rota nao encontrada"})
+    return response(404, {"error": "Rota não encontrada."})
 
 
 # ==========================================
@@ -215,19 +291,18 @@ def lambda_handler(event, context):
 # ==========================================
 
 def handle_post_transaction(user_id, raw_body):
-    body = json.loads(raw_body or "{}")
-    ticker = body["ticker"].upper().strip()
-    tx_type = body.get("type", "BUY").upper().strip()
-    shares = Decimal(str(body["shares"]))
-    price = Decimal(str(body["price"]))
+    # 1. Executa validação estrita antes de tocar na base de dados
+    valid, validated_or_err = validate_transaction_payload(raw_body)
+    if not valid:
+        return response(400, {"error": validated_or_err})
+
+    ticker = validated_or_err["ticker"]
+    tx_type = validated_or_err["type"]
+    shares = validated_or_err["shares"]
+    price = validated_or_err["price"]
+    tx_date = validated_or_err["date"]
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    today_str = now_iso[:10]
-    tx_date = body.get("date", today_str).strip()
-
-    if shares <= 0 or price < 0:
-        return response(400, {"error": "Quantidade e preco devem ser valores positivos"})
-
     pk = f"USER#{user_id}"
     pos_sk = f"POS#{ticker}"
 
@@ -246,20 +321,18 @@ def handle_post_transaction(user_id, raw_body):
         elif tx_type == "SELL":
             if shares > old_shares:
                 return response(400, {
-                    "error": f"Saldo insuficiente: tens {float(old_shares)} acoes de {ticker} para vender"
+                    "error": f"Saldo insuficiente: tens {float(old_shares)} ações de {ticker} para vender."
                 })
             new_shares = old_shares - shares
             new_avg = old_avg if new_shares > 0 else Decimal("0")
-        else:
-            return response(400, {"error": "Tipo de transacao invalido (usa BUY ou SELL)"})
     else:
         if tx_type == "SELL":
-            return response(400, {"error": f"Nao tens posicao aberta em {ticker} para vender"})
+            return response(400, {"error": f"Não tens posição aberta em {ticker} para vender."})
         new_shares = shares
         new_avg = price
         first_buy_date = tx_date
 
-    # 1. Atualizar (ou remover se ficar a 0) a posicao agregada
+    # 1. Atualizar (ou remover se liquidar) a posição agregada
     if new_shares == 0:
         table.delete_item(Key={"PK": pk, "SK": pos_sk})
     else:
@@ -270,10 +343,10 @@ def handle_post_transaction(user_id, raw_body):
             "shares": new_shares,
             "avg_cost": round(new_avg, 4),
             "first_buy_date": first_buy_date,
-            "updated_at": now_iso
+            "updated_at": now_iso,
         })
 
-    # 2. Guardar o registo da transacao
+    # 2. Guardar o registo da transação
     tx_id = uuid.uuid4().hex[:8]
     table.put_item(Item={
         "PK": pk,
@@ -283,19 +356,19 @@ def handle_post_transaction(user_id, raw_body):
         "shares": shares,
         "price": price,
         "transaction_date": tx_date,
-        "created_at": now_iso
+        "created_at": now_iso,
     })
 
-    # 3. Garantir que o ticker passa a ser monitorizado na cache global da Finnhub
+    # 3. Assegura que o ticker fica sob monitorização na Finnhub
     ensure_ticker_tracked(ticker, fallback_price=price)
 
     return response(200, {
-        "message": "Transacao registada com sucesso",
+        "message": "Transação registada com sucesso.",
         "ticker": ticker,
         "type": tx_type,
         "transaction_date": tx_date,
         "total_shares": new_shares,
-        "avg_cost": round(new_avg, 2)
+        "avg_cost": round(new_avg, 2),
     })
 
 
@@ -314,10 +387,10 @@ def handle_get_portfolio(user_id):
             "total_invested": 0,
             "total_pnl_value": 0,
             "total_pnl_pct": 0,
-            "positions": []
+            "positions": [],
         })
 
-    # Busca todos os preços em cache numa única query rápida
+    # Busca todos os preços em cache numa única leitura
     market_res = table.query(
         KeyConditionExpression=Key("PK").eq("MARKET#PRICE") & Key("SK").begins_with("TICKER#")
     )
@@ -357,7 +430,7 @@ def handle_get_portfolio(user_id):
             "market_value": round(market_value, 2),
             "pnl_value": round(pnl_value, 2),
             "pnl_pct": round(pnl_pct, 2),
-            "first_buy_date": first_buy_date
+            "first_buy_date": first_buy_date,
         })
 
     for pos in positions:
@@ -373,5 +446,5 @@ def handle_get_portfolio(user_id):
         "total_invested": round(total_invested, 2),
         "total_pnl_value": round(total_pnl, 2),
         "total_pnl_pct": round(total_pnl_pct, 2),
-        "positions": positions
+        "positions": positions,
     })
