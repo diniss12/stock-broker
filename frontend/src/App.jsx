@@ -1,64 +1,58 @@
-import { useEffect, useState } from "react";
-import { Amplify } from "aws-amplify";
-import { getCurrentUser, fetchAuthSession, signOut } from "aws-amplify/auth";
+import { useState, useEffect } from "react";
+import { getCurrentUser, signOut } from "aws-amplify/auth";
 import Login from "./components/Login";
-
-Amplify.configure({
-  Auth: {
-    Cognito: {
-      userPoolId: import.meta.env.VITE_USER_POOL_ID,
-      userPoolClientId: import.meta.env.VITE_USER_POOL_CLIENT_ID,
-    },
-  },
-});
+import Dashboard from "./components/Dashboard";
 
 export default function App() {
   const [user, setUser] = useState(null);
-  const [tokenPreview, setTokenPreview] = useState("");
-  const [checking, setChecking] = useState(true);
+  const [checkingAuth, setCheckingAuth] = useState(true);
 
-  async function checkUser() {
+  useEffect(() => {
+    checkUserSession();
+  }, []);
+
+  async function checkUserSession() {
     try {
       const currentUser = await getCurrentUser();
-      const session = await fetchAuthSession();
-      const idToken = session.tokens?.idToken?.toString() || "";
       setUser(currentUser);
-      setTokenPreview(idToken.slice(0, 40) + "...");
     } catch {
       setUser(null);
     } finally {
-      setChecking(false);
+      setCheckingAuth(false);
     }
   }
 
-  useEffect(() => {
-    checkUser();
-  }, []);
-
   async function handleLogout() {
-    await signOut();
-    setUser(null);
+    try {
+      await signOut();
+      setUser(null);
+    } catch (err) {
+      console.error("Erro ao terminar sessão:", err);
+    }
   }
 
-  if (checking) return <div style={{ color: "#fff", padding: "2rem" }}>A carregar sessão...</div>;
-
-  // Se não estiver autenticado, mostra a página de Login
-  if (!user) {
-    return <Login onLoginSuccess={checkUser} />;
-  }
-
-  // Se estiver autenticado, mostra o ecrã temporário de sucesso (onde vamos montar o Dashboard a seguir)
-  return (
-    <div style={{ minHeight: "100vh", backgroundColor: "#0f172a", color: "#fff", padding: "2rem", fontFamily: "system-ui" }}>
-      <h1>Sessão Iniciada com Sucesso!</h1>
-      <p><b>User ID (sub):</b> {user.userId}</p>
-      <p><b>Token JWT gerado:</b> <code>{tokenPreview}</code></p>
-      <button
-        onClick={handleLogout}
-        style={{ padding: "0.6rem 1.2rem", backgroundColor: "#ef4444", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer" }}
+  if (checkingAuth) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          backgroundColor: "#060908",
+          color: "#94a3b8",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "'Inter', sans-serif",
+          fontSize: "0.9rem",
+        }}
       >
-        Terminar Sessão (Logout)
-      </button>
-    </div>
+        A sincronizar sessão...
+      </div>
+    );
+  }
+
+  return user ? (
+    <Dashboard user={user} onLogout={handleLogout} />
+  ) : (
+    <Login onLoginSuccess={checkUserSession} />
   );
 }
