@@ -1,7 +1,18 @@
 import { useState, useEffect } from "react";
+import { Amplify } from "aws-amplify";
 import { getCurrentUser, signOut } from "aws-amplify/auth";
 import Login from "./components/Login";
 import Dashboard from "./components/Dashboard";
+
+// Configuração global do Cognito lida das variáveis de ambiente (ou do teu ficheiro aws-exports/config)
+Amplify.configure({
+  Auth: {
+    Cognito: {
+      userPoolId: import.meta.env.VITE_USER_POOL_ID,
+      userPoolClientId: import.meta.env.VITE_USER_POOL_CLIENT_ID,
+    },
+  },
+});
 
 export default function App() {
   const [user, setUser] = useState(null);
