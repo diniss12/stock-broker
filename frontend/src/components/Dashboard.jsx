@@ -10,28 +10,6 @@ const PALETTE = [
   "#14b8a6", "#ec4899", "#eab308", "#8b5cf6", "#6366f1"
 ];
 
-const COMPANY_NAMES = {
-  NVDA: "NVIDIA Corp.",
-  AMZN: "Amazon.com",
-  AAPL: "Apple Inc.",
-  GOOGL: "Alphabet Inc.",
-  MSFT: "Microsoft Corp.",
-  TSLA: "Tesla Inc.",
-  META: "Meta Platforms",
-  "BRK.B": "Berkshire Hathaway",
-  TSM: "Taiwan Semiconductor",
-  AVGO: "Broadcom Inc.",
-  JPM: "JPMorgan Chase",
-  V: "Visa Inc.",
-  BABA: "Alibaba Group",
-  BIDU: "Baidu Inc.",
-  JD: "JD.com Inc.",
-  MOH: "Molina Healthcare",
-  PDD: "PDD Holdings",
-  SOFI: "SoFi Technologies",
-  FICO: "Fair Isaac Corp.",
-};
-
 function StockLogo({ ticker, size = 32, borderRadius = 8 }) {
   const cleanTicker = encodeURIComponent(ticker);
   const primarySrc = `https://assets.parqet.com/logos/symbol/${cleanTicker}?format=png`;
@@ -96,7 +74,6 @@ function formatMoney(val) {
   }).format(val || 0);
 }
 
-// Valida se uma string mm/dd/yyyy corresponde a uma data real e devolve YYYY-MM-DD para a API
 function parseAndValidateDate(inputStr) {
   const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(inputStr.trim());
   if (!match) return null;
@@ -142,16 +119,27 @@ export default function Dashboard({ user, onLogout }) {
 
   const hiddenDatePickerRef = useRef(null);
 
-  // Agora sim, depois de isModalOpen e txTicker existirem:
+  // Carrega symbols.json logo no arranque para mapear os nomes tanto na tabela como no modal
   useEffect(() => {
-    if (isModalOpen && allSymbols.length === 0) {
-      fetch("/symbols.json")
-        .then((res) => res.json())
-        .then((data) => setAllSymbols(Array.isArray(data) ? data : []))
-        .catch((err) => console.error("Erro ao carregar symbols.json:", err));
-    }
-  }, [isModalOpen, allSymbols.length]);
+    fetch("/symbols.json")
+      .then((res) => res.json())
+      .then((data) => setAllSymbols(Array.isArray(data) ? data : []))
+      .catch((err) => console.error("Erro ao carregar symbols.json:", err));
+  }, []);
 
+  // Mapa rápido em memória O(1) de Ticker -> Nome da Empresa
+  const symbolsMap = useMemo(() => {
+    const map = {};
+    for (let i = 0; i < allSymbols.length; i++) {
+      const item = allSymbols[i];
+      if (item.s && item.n && !map[item.s.toUpperCase()]) {
+        map[item.s.toUpperCase()] = item.n;
+      }
+    }
+    return map;
+  }, [allSymbols]);
+
+  // Filtro de recomendações ordenado por relevância
   const filteredSymbols = useMemo(() => {
     const q = txTicker.trim().toUpperCase();
     if (!q || q.length < 1) return [];
@@ -165,16 +153,15 @@ export default function Dashboard({ user, onLogout }) {
 
       let score = 0;
       if (sym === q) {
-        score = 100; // 1.º lugar: Match exato do Ticker (ex: GOOG -> GOOG)
+        score = 100;
       } else if (sym.startsWith(q)) {
-        // 2.º lugar: Começa pelas letras digitadas (tickers mais curtos primeiro, ex: GOOGL antes de GOOGW)
         score = 80 - Math.min(sym.length - q.length, 20);
       } else if (name.startsWith(q)) {
-        score = 50; // 3.º lugar: Nome da empresa começa pelo texto
+        score = 50;
       } else if (sym.includes(q)) {
-        score = 30; // 4.º lugar: Ticker contém o texto
+        score = 30;
       } else if (name.includes(q)) {
-        score = 10; // 5.º lugar: Nome contém o texto (ex: ETFs da Direxion)
+        score = 10;
       }
 
       if (score > 0) {
@@ -189,6 +176,23 @@ export default function Dashboard({ user, onLogout }) {
 
     return matches.slice(0, 6).map((m) => m.item);
   }, [allSymbols, txTicker]);
+
+  // Atualiza automaticamente o nome sempre que o txTicker muda
+  useEffect(() => {
+    const clean = txTicker.trim().toUpperCase();
+    if (!clean) {
+      setTxName("");
+      return;
+    }
+
+    if (symbolsMap[clean]) {
+      setTxName(symbolsMap[clean]);
+    } else if (filteredSymbols.length > 0) {
+      setTxName(filteredSymbols[0].n || "");
+    } else {
+      setTxName("");
+    }
+  }, [txTicker, symbolsMap, filteredSymbols]);
 
   const getJwtToken = async () => {
     const session = await fetchAuthSession();
@@ -247,10 +251,13 @@ export default function Dashboard({ user, onLogout }) {
       totalInvested += invested;
       dayChangeDollar += posDayChange;
 
+      const cleanSym = (p.ticker || "").toUpperCase();
+      const rawName = p.name && !p.name.endsWith("Equity") ? p.name : null;
+
       return {
         ...p,
-        ticker: p.ticker,
-        name: p.name || COMPANY_NAMES[p.ticker] || `${p.ticker} Equity`,
+        ticker: cleanSym,
+        name: rawName || symbolsMap[cleanSym] || `${cleanSym} Equity`,
         shares,
         avg_cost: avgCost,
         current_price: currentPrice,
@@ -298,7 +305,7 @@ export default function Dashboard({ user, onLogout }) {
       dayChangePct,
       items: withAllocation,
     };
-  }, [positions]);
+  }, [positions, symbolsMap]);
 
   const activeCenterItem = useMemo(() => {
     if (!portfolio.items.length) return null;
@@ -308,7 +315,6 @@ export default function Dashboard({ user, onLogout }) {
     return portfolio.items[0];
   }, [portfolio, hoveredTicker]);
 
-  // Formata automaticamente enquanto o user digita apenas números (ex: 10022026 -> 10/02/2026)
   function handleDateTextChange(e) {
     const raw = e.target.value;
     const digits = raw.replace(/\D/g, "").slice(0, 8);
@@ -334,9 +340,8 @@ export default function Dashboard({ user, onLogout }) {
     }
   }
 
-  // Quando o user escolhe uma data pelo calendário nativo
   function handleNativeCalendarPick(e) {
-    const isoVal = e.target.value; // YYYY-MM-DD
+    const isoVal = e.target.value;
     if (!isoVal) return;
     const [yyyy, mm, dd] = isoVal.split("-");
     if (yyyy && mm && dd) {
@@ -362,12 +367,7 @@ export default function Dashboard({ user, onLogout }) {
     const numPrice = parseFloat(txPrice);
 
     try {
-      const matchedSymbolObj = allSymbols.find((item) => item.s.toUpperCase() === cleanSymbol);
-      const resolvedName = txName.trim() || (matchedSymbolObj ? matchedSymbolObj.n : "");
-      if (resolvedName) {
-        COMPANY_NAMES[cleanSymbol] = resolvedName;
-      }
-
+      const resolvedName = txName.trim() || symbolsMap[cleanSymbol] || "";
       const token = await getJwtToken();
       const res = await fetch(`${API_BASE_URL}/transaction`, {
         method: "POST",
@@ -381,7 +381,7 @@ export default function Dashboard({ user, onLogout }) {
           shares: numShares,
           price: numPrice,
           date: isoDate,
-          name: resolvedName, // Opcional: envia também para a API se necessário
+          name: resolvedName,
         }),
       });
 
@@ -837,7 +837,7 @@ export default function Dashboard({ user, onLogout }) {
                   {portfolio.items.map((item) => {
                     const widthPct = Math.max(
                       (item.market_value / maxPositionValue) * 100,
-                      15
+                      4
                     );
                     const isHovered = hoveredTicker === item.ticker;
 
@@ -874,11 +874,7 @@ export default function Dashboard({ user, onLogout }) {
                               backgroundColor: isHovered ? "#263830" : "#182620",
                               borderColor: isHovered ? "#375247" : "#22352d",
                             }}
-                          >
-                            <span style={styles.barInnerTicker}>
-                              ${item.ticker}
-                            </span>
-                          </div>
+                          />
                           <span style={styles.barValueLabel}>
                             {formatCompactCurrency(item.market_value)}
                           </span>
@@ -1070,7 +1066,7 @@ export default function Dashboard({ user, onLogout }) {
             </div>
 
             <form onSubmit={handleTransactionSubmit} style={styles.modalForm}>
-            <div style={styles.formRow}>
+              <div style={styles.formRow}>
                 <div style={{ ...styles.field, position: "relative" }}>
                   <label style={styles.label}>TICKER</label>
                   <input
@@ -1082,31 +1078,8 @@ export default function Dashboard({ user, onLogout }) {
                     onFocus={() => setShowDropdown(true)}
                     onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
                     onChange={(e) => {
-                      const val = e.target.value.toUpperCase();
-                      setTxTicker(val);
+                      setTxTicker(e.target.value.toUpperCase());
                       setShowDropdown(true);
-
-                      const clean = val.trim();
-                      if (!clean) {
-                        setTxName("");
-                        return;
-                      }
-
-                      // Procura match exato no symbols.json ou no dicionário COMPANY_NAMES
-                      const exactMatch = allSymbols.find(
-                        (item) => item.s.toUpperCase() === clean
-                      );
-                      if (exactMatch && exactMatch.n) {
-                        setTxName(exactMatch.n);
-                      } else if (COMPANY_NAMES[clean]) {
-                        setTxName(COMPANY_NAMES[clean]);
-                      } else {
-                        // Se ainda estiver a meio da palavra, sugere o nome do ticker mais próximo começado por essas letras
-                        const prefixMatch = allSymbols.find((item) =>
-                          item.s.toUpperCase().startsWith(clean)
-                        );
-                        setTxName(prefixMatch ? prefixMatch.n : "");
-                      }
                     }}
                     style={styles.input}
                   />
@@ -1135,13 +1108,17 @@ export default function Dashboard({ user, onLogout }) {
                 </div>
 
                 <div style={styles.field}>
-                  <label style={styles.label}>NOME (OPCIONAL)</label>
+                  <label style={styles.label}>NOME DA EMPRESA</label>
                   <input
                     type="text"
-                    placeholder="NVIDIA Corp."
+                    readOnly
+                    tabIndex={-1}
+                    placeholder="Preenchimento automático"
                     value={txName}
-                    onChange={(e) => setTxName(e.target.value)}
-                    style={styles.input}
+                    style={{
+                      ...styles.input,
+                      ...styles.readOnlyInput,
+                    }}
                   />
                 </div>
               </div>
@@ -1179,7 +1156,6 @@ export default function Dashboard({ user, onLogout }) {
                 </label>
 
                 <div style={styles.dateInputWrapper}>
-                  {/* Input de texto limpo igual ao do Ticker: o placeholder desaparece ao clicar/escrever */}
                   <input
                     type="text"
                     inputMode="numeric"
@@ -1195,7 +1171,6 @@ export default function Dashboard({ user, onLogout }) {
                     }}
                   />
 
-                  {/* Seletor de calendário nativo invisível acionado pelo botão da direita */}
                   <input
                     ref={hiddenDatePickerRef}
                     type="date"
@@ -1205,7 +1180,6 @@ export default function Dashboard({ user, onLogout }) {
                     style={styles.hiddenDateInput}
                   />
 
-                  {/* Único ícone de calendário visível em Windows, Linux e macOS */}
                   <button
                     type="button"
                     tabIndex={-1}
@@ -1513,15 +1487,7 @@ const styles = {
     height: "34px",
     borderRadius: "7px",
     border: "1px solid #22352d",
-    display: "flex",
-    alignItems: "center",
-    paddingLeft: "0.75rem",
-  },
-  barInnerTicker: {
-    fontFamily: "'JetBrains Mono', monospace",
-    fontSize: "0.77rem",
-    fontWeight: 600,
-    color: "#e4e4e7",
+    transition: "width 0.25s ease, background-color 0.15s ease",
   },
   barValueLabel: {
     fontFamily: "'Inter', sans-serif",
@@ -1712,6 +1678,13 @@ const styles = {
     fontSize: "0.92rem",
     outline: "none",
   },
+  readOnlyInput: {
+    backgroundColor: "#0b120f",
+    borderColor: "#1a2923",
+    color: "#94a3b8",
+    cursor: "not-allowed",
+    userSelect: "none",
+  },
   submitModalBtn: {
     marginTop: "0.5rem",
     height: "44px",
@@ -1774,8 +1747,6 @@ const styles = {
     fontWeight: 500,
     marginTop: "0.15rem",
   },
-
-
   dropdownMenu: {
     position: "absolute",
     top: "100%",
@@ -1812,5 +1783,4 @@ const styles = {
     textOverflow: "ellipsis",
     maxWidth: "260px",
   },
-
 };
