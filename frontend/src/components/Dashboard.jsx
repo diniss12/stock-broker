@@ -135,9 +135,60 @@ export default function Dashboard({ user, onLogout }) {
   const [txName, setTxName] = useState("");
   const [txShares, setTxShares] = useState("");
   const [txPrice, setTxPrice] = useState("");
-  const [txDate, setTxDate] = useState(""); // Começa vazio como o campo NVDA
+  const [txDate, setTxDate] = useState("");
+
+  const [allSymbols, setAllSymbols] = useState([]);
+  const [showDropdown, setShowDropdown] = useState(false);
 
   const hiddenDatePickerRef = useRef(null);
+
+  // Agora sim, depois de isModalOpen e txTicker existirem:
+  useEffect(() => {
+    if (isModalOpen && allSymbols.length === 0) {
+      fetch("/symbols.json")
+        .then((res) => res.json())
+        .then((data) => setAllSymbols(Array.isArray(data) ? data : []))
+        .catch((err) => console.error("Erro ao carregar symbols.json:", err));
+    }
+  }, [isModalOpen, allSymbols.length]);
+
+  const filteredSymbols = useMemo(() => {
+    const q = txTicker.trim().toUpperCase();
+    if (!q || q.length < 1) return [];
+
+    const matches = [];
+
+    for (let i = 0; i < allSymbols.length; i++) {
+      const item = allSymbols[i];
+      const sym = (item.s || "").toUpperCase();
+      const name = (item.n || "").toUpperCase();
+
+      let score = 0;
+      if (sym === q) {
+        score = 100; // 1.º lugar: Match exato do Ticker (ex: GOOG -> GOOG)
+      } else if (sym.startsWith(q)) {
+        // 2.º lugar: Começa pelas letras digitadas (tickers mais curtos primeiro, ex: GOOGL antes de GOOGW)
+        score = 80 - Math.min(sym.length - q.length, 20);
+      } else if (name.startsWith(q)) {
+        score = 50; // 3.º lugar: Nome da empresa começa pelo texto
+      } else if (sym.includes(q)) {
+        score = 30; // 4.º lugar: Ticker contém o texto
+      } else if (name.includes(q)) {
+        score = 10; // 5.º lugar: Nome contém o texto (ex: ETFs da Direxion)
+      }
+
+      if (score > 0) {
+        matches.push({ item, score });
+      }
+    }
+
+    matches.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.item.s.localeCompare(b.item.s);
+    });
+
+    return matches.slice(0, 6).map((m) => m.item);
+  }, [allSymbols, txTicker]);
 
   const getJwtToken = async () => {
     const session = await fetchAuthSession();
@@ -311,8 +362,10 @@ export default function Dashboard({ user, onLogout }) {
     const numPrice = parseFloat(txPrice);
 
     try {
-      if (txName.trim()) {
-        COMPANY_NAMES[cleanSymbol] = txName.trim();
+      const matchedSymbolObj = allSymbols.find((item) => item.s.toUpperCase() === cleanSymbol);
+      const resolvedName = txName.trim() || (matchedSymbolObj ? matchedSymbolObj.n : "");
+      if (resolvedName) {
+        COMPANY_NAMES[cleanSymbol] = resolvedName;
       }
 
       const token = await getJwtToken();
@@ -328,6 +381,7 @@ export default function Dashboard({ user, onLogout }) {
           shares: numShares,
           price: numPrice,
           date: isoDate,
+          name: resolvedName, // Opcional: envia também para a API se necessário
         }),
       });
 
@@ -1016,18 +1070,70 @@ export default function Dashboard({ user, onLogout }) {
             </div>
 
             <form onSubmit={handleTransactionSubmit} style={styles.modalForm}>
-              <div style={styles.formRow}>
-                <div style={styles.field}>
+            <div style={styles.formRow}>
+                <div style={{ ...styles.field, position: "relative" }}>
                   <label style={styles.label}>TICKER</label>
                   <input
                     type="text"
                     required
                     placeholder="NVDA"
+                    autoComplete="off"
                     value={txTicker}
-                    onChange={(e) => setTxTicker(e.target.value)}
+                    onFocus={() => setShowDropdown(true)}
+                    onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
+                    onChange={(e) => {
+                      const val = e.target.value.toUpperCase();
+                      setTxTicker(val);
+                      setShowDropdown(true);
+
+                      const clean = val.trim();
+                      if (!clean) {
+                        setTxName("");
+                        return;
+                      }
+
+                      // Procura match exato no symbols.json ou no dicionário COMPANY_NAMES
+                      const exactMatch = allSymbols.find(
+                        (item) => item.s.toUpperCase() === clean
+                      );
+                      if (exactMatch && exactMatch.n) {
+                        setTxName(exactMatch.n);
+                      } else if (COMPANY_NAMES[clean]) {
+                        setTxName(COMPANY_NAMES[clean]);
+                      } else {
+                        // Se ainda estiver a meio da palavra, sugere o nome do ticker mais próximo começado por essas letras
+                        const prefixMatch = allSymbols.find((item) =>
+                          item.s.toUpperCase().startsWith(clean)
+                        );
+                        setTxName(prefixMatch ? prefixMatch.n : "");
+                      }
+                    }}
                     style={styles.input}
                   />
+
+                  {showDropdown && filteredSymbols.length > 0 && (
+                    <div style={styles.dropdownMenu}>
+                      {filteredSymbols.map((item) => (
+                        <div
+                          key={item.s}
+                          style={styles.dropdownItem}
+                          onMouseDown={() => {
+                            setTxTicker(item.s);
+                            setTxName(item.n || "");
+                            setShowDropdown(false);
+                          }}
+                        >
+                          <StockLogo ticker={item.s} size={22} borderRadius={6} />
+                          <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                            <span style={styles.dropdownTicker}>{item.s}</span>
+                            <span style={styles.dropdownName}>{item.n}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
+
                 <div style={styles.field}>
                   <label style={styles.label}>NOME (OPCIONAL)</label>
                   <input
@@ -1668,4 +1774,43 @@ const styles = {
     fontWeight: 500,
     marginTop: "0.15rem",
   },
+
+
+  dropdownMenu: {
+    position: "absolute",
+    top: "100%",
+    left: 0,
+    right: 0,
+    zIndex: 100,
+    backgroundColor: "#0d1613",
+    border: "1px solid #23382f",
+    borderRadius: "8px",
+    marginTop: "4px",
+    maxHeight: "220px",
+    overflowY: "auto",
+    boxShadow: "0 12px 30px rgba(0, 0, 0, 0.75)",
+  },
+  dropdownItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.65rem",
+    padding: "0.55rem 0.75rem",
+    cursor: "pointer",
+    borderBottom: "1px solid #14221d",
+  },
+  dropdownTicker: {
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: "0.85rem",
+    fontWeight: 700,
+    color: "#ffffff",
+  },
+  dropdownName: {
+    fontSize: "0.72rem",
+    color: "#8e959e",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    maxWidth: "260px",
+  },
+
 };
