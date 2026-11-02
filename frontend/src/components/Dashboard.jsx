@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { fetchAuthSession } from "aws-amplify/auth";
 
 const API_BASE_URL =
@@ -96,7 +96,33 @@ function formatMoney(val) {
   }).format(val || 0);
 }
 
+// Valida se uma string mm/dd/yyyy corresponde a uma data real e devolve YYYY-MM-DD para a API
+function parseAndValidateDate(inputStr) {
+  const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(inputStr.trim());
+  if (!match) return null;
+
+  const month = parseInt(match[1], 10);
+  const day = parseInt(match[2], 10);
+  const year = parseInt(match[3], 10);
+
+  if (month < 1 || month > 12 || day < 1 || day > 31 || year < 1900 || year > 2100) {
+    return null;
+  }
+
+  const checkDate = new Date(year, month - 1, day);
+  if (
+    checkDate.getFullYear() !== year ||
+    checkDate.getMonth() !== month - 1 ||
+    checkDate.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return `${match[3]}-${match[1]}-${match[2]}`;
+}
+
 export default function Dashboard({ user, onLogout }) {
+  const [dateError, setDateError] = useState("");
   const [positions, setPositions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -109,7 +135,9 @@ export default function Dashboard({ user, onLogout }) {
   const [txName, setTxName] = useState("");
   const [txShares, setTxShares] = useState("");
   const [txPrice, setTxPrice] = useState("");
-  const [txDate, setTxDate] = useState(new Date().toISOString().slice(0, 10));
+  const [txDate, setTxDate] = useState(""); // Começa vazio como o campo NVDA
+
+  const hiddenDatePickerRef = useRef(null);
 
   const getJwtToken = async () => {
     const session = await fetchAuthSession();
@@ -229,9 +257,53 @@ export default function Dashboard({ user, onLogout }) {
     return portfolio.items[0];
   }, [portfolio, hoveredTicker]);
 
+  // Formata automaticamente enquanto o user digita apenas números (ex: 10022026 -> 10/02/2026)
+  function handleDateTextChange(e) {
+    const raw = e.target.value;
+    const digits = raw.replace(/\D/g, "").slice(0, 8);
+
+    let formatted = digits;
+    if (digits.length > 4) {
+      formatted = `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+    } else if (digits.length > 2) {
+      formatted = `${digits.slice(0, 2)}/${digits.slice(2)}`;
+    }
+
+    setTxDate(formatted);
+
+    if (formatted.length === 10) {
+      const iso = parseAndValidateDate(formatted);
+      if (!iso) {
+        setDateError("Data inválida. Insere no formato mm/dd/yyyy (ex: 10/25/2026).");
+      } else {
+        setDateError("");
+      }
+    } else {
+      setDateError("");
+    }
+  }
+
+  // Quando o user escolhe uma data pelo calendário nativo
+  function handleNativeCalendarPick(e) {
+    const isoVal = e.target.value; // YYYY-MM-DD
+    if (!isoVal) return;
+    const [yyyy, mm, dd] = isoVal.split("-");
+    if (yyyy && mm && dd) {
+      setTxDate(`${mm}/${dd}/${yyyy}`);
+      setDateError("");
+    }
+  }
+
   async function handleTransactionSubmit(e) {
     e.preventDefault();
     setApiError("");
+
+    const isoDate = parseAndValidateDate(txDate);
+    if (!isoDate) {
+      setDateError("Formato incorreto. Insere Mês/Dia/Ano (mm/dd/yyyy).");
+      return;
+    }
+
     setSubmitting(true);
 
     const cleanSymbol = txTicker.trim().toUpperCase();
@@ -255,7 +327,7 @@ export default function Dashboard({ user, onLogout }) {
           type: txType,
           shares: numShares,
           price: numPrice,
-          date: txDate,
+          date: isoDate,
         }),
       });
 
@@ -269,6 +341,8 @@ export default function Dashboard({ user, onLogout }) {
       setTxName("");
       setTxShares("");
       setTxPrice("");
+      setTxDate("");
+      setDateError("");
       setIsModalOpen(false);
     } catch (err) {
       setApiError(err.message || "Falha ao comunicar com o servidor.");
@@ -353,6 +427,7 @@ export default function Dashboard({ user, onLogout }) {
             type="button"
             onClick={() => {
               setApiError("");
+              setDateError("");
               setIsModalOpen(true);
             }}
             style={styles.primaryBtn}
@@ -993,14 +1068,80 @@ export default function Dashboard({ user, onLogout }) {
               </div>
 
               <div style={styles.field}>
-                <label style={styles.label}>DATA DA OPERAÇÃO</label>
-                <input
-                  type="date"
-                  required
-                  value={txDate}
-                  onChange={(e) => setTxDate(e.target.value)}
-                  style={styles.input}
-                />
+                <label style={styles.label}>
+                  DATA DA OPERAÇÃO <span style={styles.labelHint}>(mm/dd/yyyy)</span>
+                </label>
+
+                <div style={styles.dateInputWrapper}>
+                  {/* Input de texto limpo igual ao do Ticker: o placeholder desaparece ao clicar/escrever */}
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    required
+                    placeholder="mm/dd/yyyy"
+                    maxLength={10}
+                    value={txDate}
+                    onChange={handleDateTextChange}
+                    style={{
+                      ...styles.input,
+                      ...styles.dateInputCustom,
+                      borderColor: dateError ? "#ef4444" : "#23382f",
+                    }}
+                  />
+
+                  {/* Seletor de calendário nativo invisível acionado pelo botão da direita */}
+                  <input
+                    ref={hiddenDatePickerRef}
+                    type="date"
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    onChange={handleNativeCalendarPick}
+                    style={styles.hiddenDateInput}
+                  />
+
+                  {/* Único ícone de calendário visível em Windows, Linux e macOS */}
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={() => {
+                      const picker = hiddenDatePickerRef.current;
+                      if (picker) {
+                        if (typeof picker.showPicker === "function") {
+                          picker.showPicker();
+                        } else {
+                          picker.focus();
+                          picker.click();
+                        }
+                      }
+                    }}
+                    style={styles.calendarTriggerBtn}
+                    title="Abrir calendário"
+                  >
+                    <svg
+                      width="17"
+                      height="17"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="#64748b"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                      <line x1="16" y1="2" x2="16" y2="6" />
+                      <line x1="8" y1="2" x2="8" y2="6" />
+                      <line x1="3" y1="10" x2="21" y2="10" />
+                    </svg>
+                  </button>
+                </div>
+
+                {dateError ? (
+                  <span style={styles.errorTextTip}>{dateError}</span>
+                ) : (
+                  <span style={styles.lightHintText}>
+                    Atenção: insere os números (Mês/Dia/Ano) ou usa o calendário à direita.
+                  </span>
+                )}
               </div>
 
               <button
@@ -1476,5 +1617,55 @@ const styles = {
     fontWeight: 600,
     fontSize: "0.92rem",
     cursor: "pointer",
+  },
+  labelHint: {
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: "0.68rem",
+    color: "#10b981",
+    fontWeight: 500,
+    marginLeft: "0.35rem",
+  },
+  dateInputWrapper: {
+    position: "relative",
+    width: "100%",
+    display: "flex",
+    alignItems: "center",
+  },
+  dateInputCustom: {
+    paddingRight: "2.5rem",
+  },
+  hiddenDateInput: {
+    position: "absolute",
+    right: "0.75rem",
+    width: "0px",
+    height: "0px",
+    opacity: 0,
+    border: "none",
+    padding: 0,
+    pointerEvents: "none",
+    colorScheme: "dark",
+  },
+  calendarTriggerBtn: {
+    position: "absolute",
+    right: "0.75rem",
+    background: "none",
+    border: "none",
+    padding: "0.2rem",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  lightHintText: {
+    fontSize: "0.72rem",
+    color: "#52605b",
+    lineHeight: 1.35,
+    marginTop: "0.15rem",
+  },
+  errorTextTip: {
+    fontSize: "0.72rem",
+    color: "#ef4444",
+    fontWeight: 500,
+    marginTop: "0.15rem",
   },
 };
