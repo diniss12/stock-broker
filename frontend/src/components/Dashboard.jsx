@@ -35,6 +35,26 @@ function StockLogo({ ticker, size = 32, borderRadius = 8 }) {
   );
 }
 
+function SwapArrowIcon({ size = 14, color = "currentColor" }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={color}
+      strokeWidth="2.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ display: "block", flexShrink: 0 }}
+    >
+      <path d="M4 12h16" />
+      <path d="M8 8l-4 4 4 4" />
+      <path d="M16 8l4 4-4 4" />
+    </svg>
+  );
+}
+
 function polarToCartesian(cx, cy, r, angleInDegrees) {
   const angleInRadians = ((angleInDegrees - 90) * Math.PI) / 180.0;
   return {
@@ -121,7 +141,10 @@ export default function Dashboard({ user, onLogout }) {
   const [viewCurrency, setViewCurrency] = useState(
     () => localStorage.getItem("user_currency") || "EUR"
   );
+  // spotFxRate guarda sempre a referência EUR/USD (1 EUR = X USD)
   const [spotFxRate, setSpotFxRate] = useState(1.085);
+  // Controla se a cotação cambial é exibida/introduzida como EUR/USD (false) ou USD/EUR (true)
+  const [isFxInverted, setIsFxInverted] = useState(false);
 
   const [dateError, setDateError] = useState("");
   const [positions, setPositions] = useState([]);
@@ -129,6 +152,8 @@ export default function Dashboard({ user, onLogout }) {
   const [submitting, setSubmitting] = useState(false);
   const [apiError, setApiError] = useState("");
   const [hoveredTicker, setHoveredTicker] = useState(null);
+  const [openPnlTicker, setOpenPnlTicker] = useState(null);
+  const [showTotalPnlBreakdown, setShowTotalPnlBreakdown] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const [txType, setTxType] = useState("BUY");
@@ -149,6 +174,23 @@ export default function Dashboard({ user, onLogout }) {
   const handleCurrencyChange = (newCurr) => {
     setViewCurrency(newCurr);
     localStorage.setItem("user_currency", newCurr);
+  };
+
+  // Alterna entre EUR/USD e USD/EUR e inverte automaticamente o valor do input no modal
+  const handleToggleFxDirection = () => {
+    setIsFxInverted((prev) => {
+      const nextInverted = !prev;
+      const currentVal = parseFloat(txExchangeRate);
+      if (currentVal && currentVal > 0) {
+        setTxExchangeRate((1 / currentVal).toFixed(4));
+      } else {
+        const baseSpot = spotFxRate > 0 ? spotFxRate : 1.085;
+        setTxExchangeRate(
+          nextInverted ? (1 / baseSpot).toFixed(4) : baseSpot.toFixed(4)
+        );
+      }
+      return nextInverted;
+    });
   };
 
   // Carrega symbols.json logo no arranque para mapear os nomes tanto na tabela como no modal
@@ -252,7 +294,6 @@ export default function Dashboard({ user, onLogout }) {
       if (data.fx_rate_eur_usd && Number(data.fx_rate_eur_usd) > 0) {
         const fetchedRate = Number(data.fx_rate_eur_usd);
         setSpotFxRate(fetchedRate);
-        setTxExchangeRate(fetchedRate.toFixed(4));
       }
     } catch (err) {
       console.error("Erro ao carregar carteira:", err);
@@ -267,37 +308,48 @@ export default function Dashboard({ user, onLogout }) {
     return () => clearInterval(interval);
   }, [fetchPortfolio]);
 
-  // Cálculo da carteira reativo à vista selecionada (USD vs EUR)
+  // Cálculo da carteira + Decomposição de Retorno (Stock vs FX) para os 4 cenários
   const portfolio = useMemo(() => {
-    const isEur = viewCurrency === "EUR";
+    const isEurView = viewCurrency === "EUR";
     const safeFx = spotFxRate > 0 ? spotFxRate : 1.085;
 
     let totalValue = 0;
     let totalInvested = 0;
     let dayChangeAmount = 0;
+    let totalStockPnl = 0;
+    let totalFxPnl = 0;
 
     const enriched = positions.map((p, idx) => {
       const shares = Number(p.shares || 0);
+      const assetCurrency = String(p.asset_currency || "USD").toUpperCase();
 
       const avgCostUsd = Number(p.avg_cost_usd ?? p.avg_cost ?? 0);
       const avgCostEur = Number(
         p.avg_cost_eur ?? (avgCostUsd / safeFx)
       );
 
-      const currentPriceUsd = Number(p.current_price_usd ?? p.current_price ?? avgCostUsd);
+      const currentPriceUsd = Number(
+        p.current_price_usd ?? p.current_price ?? avgCostUsd
+      );
       const currentPriceEur = Number(
         p.current_price_eur ?? (currentPriceUsd / safeFx)
       );
 
-      const avgCost = isEur ? avgCostEur : avgCostUsd;
-      const currentPrice = isEur ? currentPriceEur : currentPriceUsd;
+      // Preço Médio e Preço Atual na moeda nativa do ativo (para a tabela de posições)
+      const avgCostNative = assetCurrency === "EUR" ? avgCostEur : avgCostUsd;
+      const currentPriceNative =
+        assetCurrency === "EUR" ? currentPriceEur : currentPriceUsd;
+
+      // Valores na moeda da vista (para cálculos agregados)
+      const avgCostView = isEurView ? avgCostEur : avgCostUsd;
+      const currentPriceView = isEurView ? currentPriceEur : currentPriceUsd;
       const dayChangePct = Number(p.day_change_pct || 0);
 
-      const marketValue = isEur
+      const marketValue = isEurView
         ? Number(p.market_value_eur ?? shares * currentPriceEur)
         : Number(p.market_value_usd ?? p.market_value ?? shares * currentPriceUsd);
 
-      const invested = isEur
+      const invested = isEurView
         ? Number(p.invested_eur ?? shares * avgCostEur)
         : Number(p.invested_usd ?? shares * avgCostUsd);
 
@@ -305,9 +357,39 @@ export default function Dashboard({ user, onLogout }) {
       const pnlPct = invested > 0 ? (pnlValue / invested) * 100 : 0;
       const posDayChange = marketValue * (dayChangePct / 100);
 
+      // Taxa de câmbio média implícita de entrada (EUR/USD)
+      const impliedEntryFx =
+        avgCostEur > 0 ? avgCostUsd / avgCostEur : safeFx;
+
+      // Decomposição exata nos 4 cenários (Ativo USD/EUR x Vista USD/EUR)
+      let stockPnl = pnlValue;
+      let fxPnl = 0;
+      const hasFxExposure = assetCurrency !== viewCurrency;
+
+      if (!hasFxExposure) {
+        // Cenário 1 & 2: Ativo na mesma moeda da Vista (USD->USD ou EUR->EUR)
+        stockPnl = pnlValue;
+        fxPnl = 0;
+      } else if (assetCurrency === "USD" && viewCurrency === "EUR") {
+        // Cenário 3: Ativo cotado em USD visto em EUR
+        const rawStockGainUsd = (currentPriceUsd - avgCostUsd) * shares;
+        stockPnl = impliedEntryFx > 0 ? rawStockGainUsd / impliedEntryFx : pnlValue;
+        fxPnl = pnlValue - stockPnl;
+      } else if (assetCurrency === "EUR" && viewCurrency === "USD") {
+        // Cenário 4: Ativo cotado em EUR visto em USD
+        const rawStockGainEur = (currentPriceEur - avgCostEur) * shares;
+        stockPnl = rawStockGainEur * impliedEntryFx;
+        fxPnl = pnlValue - stockPnl;
+      }
+
+      const stockPnlPct = invested > 0 ? (stockPnl / invested) * 100 : 0;
+      const fxPnlPct = invested > 0 ? (fxPnl / invested) * 100 : 0;
+
       totalValue += marketValue;
       totalInvested += invested;
       dayChangeAmount += posDayChange;
+      totalStockPnl += stockPnl;
+      totalFxPnl += fxPnl;
 
       const cleanSym = (p.ticker || "").toUpperCase();
       const rawName = p.name && !p.name.endsWith("Equity") ? p.name : null;
@@ -317,14 +399,27 @@ export default function Dashboard({ user, onLogout }) {
         ticker: cleanSym,
         name: rawName || symbolsMap[cleanSym] || `${cleanSym} Equity`,
         shares,
-        avg_cost: avgCost,
-        current_price: currentPrice,
+        asset_currency: assetCurrency,
+        has_fx_exposure: hasFxExposure,
+        implied_entry_fx: impliedEntryFx,
+        avg_cost: avgCostView,
+        avg_cost_native: avgCostNative,
+        avg_cost_usd: avgCostUsd,
+        avg_cost_eur: avgCostEur,
+        current_price: currentPriceView,
+        current_price_native: currentPriceNative,
+        current_price_usd: currentPriceUsd,
+        current_price_eur: currentPriceEur,
         day_change_pct: dayChangePct,
         color: PALETTE[idx % PALETTE.length],
         market_value: marketValue,
         invested,
         pnl_value: pnlValue,
         pnl_pct: pnlPct,
+        stock_pnl: stockPnl,
+        stock_pnl_pct: stockPnlPct,
+        fx_pnl: fxPnl,
+        fx_pnl_pct: fxPnlPct,
       };
     });
 
@@ -352,6 +447,10 @@ export default function Dashboard({ user, onLogout }) {
 
     const totalPnlValue = totalValue - totalInvested;
     const totalPnlPct = totalInvested > 0 ? (totalPnlValue / totalInvested) * 100 : 0;
+    const totalStockPnlPct =
+      totalInvested > 0 ? (totalStockPnl / totalInvested) * 100 : 0;
+    const totalFxPnlPct =
+      totalInvested > 0 ? (totalFxPnl / totalInvested) * 100 : 0;
     const dayChangePct = totalValue > 0 ? (dayChangeAmount / totalValue) * 100 : 0;
 
     return {
@@ -359,6 +458,10 @@ export default function Dashboard({ user, onLogout }) {
       totalInvested,
       totalPnlValue,
       totalPnlPct,
+      totalStockPnl,
+      totalStockPnlPct,
+      totalFxPnl,
+      totalFxPnlPct,
       dayChangeDollar: dayChangeAmount,
       dayChangePct,
       items: withAllocation,
@@ -373,14 +476,21 @@ export default function Dashboard({ user, onLogout }) {
     return portfolio.items[0];
   }, [portfolio, hoveredTicker]);
 
+  // Normaliza a taxa introduzida no modal para EUR/USD (1 EUR = X USD)
+  const normalizedEurUsdRate = useMemo(() => {
+    if (txAssetCurrency === viewCurrency) return 1.0;
+    const raw = parseFloat(txExchangeRate);
+    if (!raw || isNaN(raw) || raw <= 0) return null;
+    return isFxInverted ? 1 / raw : raw;
+  }, [txAssetCurrency, viewCurrency, txExchangeRate, isFxInverted]);
+
   // Pré-visualização de conversão em tempo real no Modal
   const modalPreview = useMemo(() => {
     const s = parseFloat(txShares);
     const p = parseFloat(txPrice);
-    const fx =
-      txAssetCurrency === viewCurrency ? 1.0 : parseFloat(txExchangeRate);
+    const fxEurUsd = normalizedEurUsdRate;
 
-    if (!s || s <= 0 || isNaN(p) || p < 0 || !fx || fx <= 0) {
+    if (!s || s <= 0 || isNaN(p) || p < 0 || !fxEurUsd || fxEurUsd <= 0) {
       return null;
     }
 
@@ -390,10 +500,12 @@ export default function Dashboard({ user, onLogout }) {
 
     if (txAssetCurrency === "USD") {
       totalUsd = totalNative;
-      totalEur = txAssetCurrency === viewCurrency ? totalNative : totalNative / fx;
+      totalEur =
+        txAssetCurrency === viewCurrency ? totalNative : totalNative / fxEurUsd;
     } else {
       totalEur = totalNative;
-      totalUsd = txAssetCurrency === viewCurrency ? totalNative : totalNative * fx;
+      totalUsd =
+        txAssetCurrency === viewCurrency ? totalNative : totalNative * fxEurUsd;
     }
 
     return {
@@ -402,7 +514,17 @@ export default function Dashboard({ user, onLogout }) {
       totalEur,
       needsConversion: txAssetCurrency !== viewCurrency,
     };
-  }, [txShares, txPrice, txAssetCurrency, viewCurrency, txExchangeRate]);
+  }, [txShares, txPrice, txAssetCurrency, viewCurrency, normalizedEurUsdRate]);
+
+  function openNewOperationModal() {
+    setApiError("");
+    setDateError("");
+    const baseRate = spotFxRate > 0 ? spotFxRate : 1.085;
+    setTxExchangeRate(
+      isFxInverted ? (1 / baseRate).toFixed(4) : baseRate.toFixed(4)
+    );
+    setIsModalOpen(true);
+  }
 
   function handleDateTextChange(e) {
     const raw = e.target.value;
@@ -450,9 +572,9 @@ export default function Dashboard({ user, onLogout }) {
     }
 
     const isSameCurrency = txAssetCurrency === viewCurrency;
-    const parsedFx = isSameCurrency ? 1.0 : parseFloat(txExchangeRate);
+    const finalEurUsdFx = isSameCurrency ? 1.0 : normalizedEurUsdRate;
 
-    if (!parsedFx || isNaN(parsedFx) || parsedFx <= 0) {
+    if (!finalEurUsdFx || isNaN(finalEurUsdFx) || finalEurUsdFx <= 0) {
       setApiError("Insere uma taxa de câmbio válida maior que 0.");
       return;
     }
@@ -479,7 +601,7 @@ export default function Dashboard({ user, onLogout }) {
           price: numPrice,
           asset_currency: txAssetCurrency,
           base_currency: viewCurrency,
-          exchange_rate: parsedFx,
+          exchange_rate: Number(finalEurUsdFx.toFixed(6)),
           date: isoDate,
           name: resolvedName,
         }),
@@ -510,6 +632,10 @@ export default function Dashboard({ user, onLogout }) {
 
   const currencySymbol = viewCurrency === "EUR" ? "€" : "$";
   const needsFxConversion = txAssetCurrency !== viewCurrency;
+  const displayedSpotRate = isFxInverted
+    ? (1 / (spotFxRate || 1.085)).toFixed(4)
+    : (spotFxRate || 1.085).toFixed(4);
+  const fxPairLabel = isFxInverted ? "USD/EUR" : "EUR/USD";
 
   return (
     <div style={styles.page}>
@@ -578,10 +704,18 @@ export default function Dashboard({ user, onLogout }) {
           </svg>
           <span style={styles.brandText}>StockBroker</span>
 
-          {/* Indicador discreto da Taxa BCE */}
-          <span style={styles.fxRateBadge} title="Taxa de referência BCE (EUR/USD)">
-            BCE EUR/USD: {spotFxRate.toFixed(4)}
-          </span>
+          {/* Botão/Badge da Taxa BCE com Dupla Seta para inverter EUR/USD <-> USD/EUR */}
+          <button
+            type="button"
+            onClick={handleToggleFxDirection}
+            style={styles.fxRateBadgeBtn}
+            title="Clica para inverter o par cambial (EUR/USD ↔ USD/EUR)"
+          >
+            <span>
+              BCE {fxPairLabel}: {displayedSpotRate}
+            </span>
+            <SwapArrowIcon size={13} color="#10b981" />
+          </button>
         </div>
 
         <div style={styles.navActions}>
@@ -611,12 +745,7 @@ export default function Dashboard({ user, onLogout }) {
 
           <button
             type="button"
-            onClick={() => {
-              setApiError("");
-              setDateError("");
-              setTxExchangeRate(spotFxRate.toFixed(4));
-              setIsModalOpen(true);
-            }}
+            onClick={openNewOperationModal}
             style={styles.primaryBtn}
           >
             + Nova Operação
@@ -677,14 +806,20 @@ export default function Dashboard({ user, onLogout }) {
             </div>
             <span style={styles.kpiSub}>
               {viewCurrency === "EUR"
-                ? "Custo real acumulado (câmbio de compra)"
+                ? "Custo real acumulado (câmbio)"
                 : "Custo médio ponderado acumulado"}
             </span>
           </div>
 
-          <div style={styles.kpiCard}>
+          {/* Card de Rentabilidade Total com Popover de Decomposição (Stock vs FX) */}
+          <div
+            style={{ ...styles.kpiCard, position: "relative", cursor: "pointer" }}
+            onMouseEnter={() => setShowTotalPnlBreakdown(true)}
+            onMouseLeave={() => setShowTotalPnlBreakdown(false)}
+            onClick={() => setShowTotalPnlBreakdown((prev) => !prev)}
+          >
             <span style={styles.kpiLabel}>
-              RENTABILIDADE TOTAL (P&L {currencySymbol})
+              RENTABILIDADE TOTAL (P&L {currencySymbol}) ▾
             </span>
             <div style={styles.kpiCenterRow}>
               <span
@@ -713,8 +848,53 @@ export default function Dashboard({ user, onLogout }) {
               )}
             </div>
             <span style={styles.kpiSub}>
-              Retorno líquido sobre o capital investido
+              Ação:{" "}
+              {portfolio.totalStockPnl >= 0 ? "+" : ""}
+              {formatMoney(portfolio.totalStockPnl, viewCurrency)} · FX:{" "}
+              {portfolio.totalFxPnl >= 0 ? "+" : ""}
+              {formatMoney(portfolio.totalFxPnl, viewCurrency)}
             </span>
+
+            {showTotalPnlBreakdown && portfolio.items.length > 0 && (
+              <div style={{ ...styles.fxPopover, top: "96%", left: "1.2rem", right: "auto" }}>
+                <div style={styles.fxPopoverHeader}>
+                  Decomposição Global ({viewCurrency})
+                </div>
+                <div style={styles.fxPopoverRow}>
+                  <span style={styles.fxPopoverDim}>Valorização Ações:</span>
+                  <span
+                    style={{
+                      ...styles.fxPopoverVal,
+                      color: portfolio.totalStockPnl >= 0 ? "#10b981" : "#ef4444",
+                    }}
+                  >
+                    {portfolio.totalStockPnl >= 0 ? "+" : ""}
+                    {formatMoney(portfolio.totalStockPnl, viewCurrency)} (
+                    {portfolio.totalStockPnlPct >= 0 ? "+" : ""}
+                    {portfolio.totalStockPnlPct.toFixed(2)}%)
+                  </span>
+                </div>
+                <div style={styles.fxPopoverRow}>
+                  <span style={styles.fxPopoverDim}>Impacto Cambial (FX):</span>
+                  <span
+                    style={{
+                      ...styles.fxPopoverVal,
+                      color:
+                        Math.abs(portfolio.totalFxPnl) < 0.005
+                          ? "#94a3b8"
+                          : portfolio.totalFxPnl >= 0
+                          ? "#10b981"
+                          : "#ef4444",
+                    }}
+                  >
+                    {portfolio.totalFxPnl >= 0 ? "+" : ""}
+                    {formatMoney(portfolio.totalFxPnl, viewCurrency)} (
+                    {portfolio.totalFxPnlPct >= 0 ? "+" : ""}
+                    {portfolio.totalFxPnlPct.toFixed(2)}%)
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           <div style={styles.kpiCard}>
@@ -769,10 +949,7 @@ export default function Dashboard({ user, onLogout }) {
             </p>
             <button
               type="button"
-              onClick={() => {
-                setTxExchangeRate(spotFxRate.toFixed(4));
-                setIsModalOpen(true);
-              }}
+              onClick={openNewOperationModal}
               style={{ ...styles.primaryBtn, marginTop: "0.75rem" }}
             >
               + Registar Primeira Compra
@@ -1048,12 +1225,8 @@ export default function Dashboard({ user, onLogout }) {
                     <tr style={styles.theadRow}>
                       <th style={styles.th}>ATIVO</th>
                       <th style={styles.thRight}>QUANTIDADE</th>
-                      <th style={styles.thRight}>
-                        PREÇO MÉDIO ({currencySymbol})
-                      </th>
-                      <th style={styles.thRight}>
-                        PREÇO ATUAL ({currencySymbol})
-                      </th>
+                      <th style={styles.thRight}>PREÇO MÉDIO</th>
+                      <th style={styles.thRight}>PREÇO ATUAL</th>
                       <th style={styles.thRight}>VAR. DIÁRIA</th>
                       <th style={styles.thRight}>
                         VALOR MERCADO ({currencySymbol})
@@ -1068,6 +1241,7 @@ export default function Dashboard({ user, onLogout }) {
                     {portfolio.items.map((item) => {
                       const isProfit = item.pnl_value >= 0;
                       const isDayUp = item.day_change_pct >= 0;
+                      const isPopoverOpen = openPnlTicker === item.ticker;
 
                       return (
                         <tr
@@ -1083,14 +1257,21 @@ export default function Dashboard({ user, onLogout }) {
                               borderRadius={8}
                             />
                             <div>
-                              <div style={styles.tdTicker}>{item.ticker}</div>
+                              <div style={styles.tdTicker}>
+                                {item.ticker}
+                                <span style={styles.assetCurrTag}>
+                                  {item.asset_currency}
+                                </span>
+                              </div>
                               <div style={styles.tdName}>{item.name}</div>
                             </div>
                           </td>
 
                           <td style={styles.tdRight}>{item.shares}</td>
+
+                          {/* Preço Médio e Preço Atual sempre na moeda nativa do Ativo */}
                           <td style={styles.tdRight}>
-                            {formatMoney(item.avg_cost, viewCurrency)}
+                            {formatMoney(item.avg_cost_native, item.asset_currency)}
                           </td>
                           <td
                             style={{
@@ -1099,7 +1280,10 @@ export default function Dashboard({ user, onLogout }) {
                               color: "#fff",
                             }}
                           >
-                            {formatMoney(item.current_price, viewCurrency)}
+                            {formatMoney(
+                              item.current_price_native,
+                              item.asset_currency
+                            )}
                           </td>
 
                           <td style={styles.tdRight}>
@@ -1127,15 +1311,35 @@ export default function Dashboard({ user, onLogout }) {
                             {formatMoney(item.market_value, viewCurrency)}
                           </td>
 
-                          <td style={styles.tdRight}>
+                          {/* Célula de P&L com Dropdown/Popover de Decomposição (Stock vs FX) */}
+                          <td
+                            style={{
+                              ...styles.tdRight,
+                              position: "relative",
+                              cursor: "pointer",
+                            }}
+                            onMouseEnter={() => setOpenPnlTicker(item.ticker)}
+                            onMouseLeave={() => setOpenPnlTicker(null)}
+                            onClick={() =>
+                              setOpenPnlTicker((prev) =>
+                                prev === item.ticker ? null : item.ticker
+                              )
+                            }
+                          >
                             <div
                               style={{
                                 color: isProfit ? "#10b981" : "#ef4444",
                                 fontWeight: 600,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "0.3rem",
                               }}
                             >
-                              {isProfit ? "+" : ""}
-                              {formatMoney(item.pnl_value, viewCurrency)}
+                              <span>
+                                {isProfit ? "+" : ""}
+                                {formatMoney(item.pnl_value, viewCurrency)}
+                              </span>
+                              <span style={styles.fxTriggerBadge}>▾</span>
                             </div>
                             <div
                               style={{
@@ -1146,6 +1350,71 @@ export default function Dashboard({ user, onLogout }) {
                               ({isProfit ? "+" : ""}
                               {item.pnl_pct.toFixed(2)}%)
                             </div>
+
+                            {isPopoverOpen && (
+                              <div style={styles.fxPopover}>
+                                <div style={styles.fxPopoverHeader}>
+                                  Decomposição P&L ({item.ticker})
+                                </div>
+
+                                <div style={styles.fxPopoverRow}>
+                                  <span style={styles.fxPopoverDim}>
+                                    Ação ({item.asset_currency}):
+                                  </span>
+                                  <span
+                                    style={{
+                                      ...styles.fxPopoverVal,
+                                      color:
+                                        item.stock_pnl >= 0 ? "#10b981" : "#ef4444",
+                                    }}
+                                  >
+                                    {item.stock_pnl >= 0 ? "+" : ""}
+                                    {formatMoney(item.stock_pnl, viewCurrency)} (
+                                    {item.stock_pnl_pct >= 0 ? "+" : ""}
+                                    {item.stock_pnl_pct.toFixed(2)}%)
+                                  </span>
+                                </div>
+
+                                <div style={styles.fxPopoverRow}>
+                                  <span style={styles.fxPopoverDim}>
+                                    Câmbio (FX):
+                                  </span>
+                                  <span
+                                    style={{
+                                      ...styles.fxPopoverVal,
+                                      color: !item.has_fx_exposure
+                                        ? "#94a3b8"
+                                        : item.fx_pnl >= 0
+                                        ? "#10b981"
+                                        : "#ef4444",
+                                    }}
+                                  >
+                                    {item.fx_pnl >= 0 ? "+" : ""}
+                                    {formatMoney(item.fx_pnl, viewCurrency)} (
+                                    {item.fx_pnl_pct >= 0 ? "+" : ""}
+                                    {item.fx_pnl_pct.toFixed(2)}%)
+                                  </span>
+                                </div>
+
+                                <div style={styles.fxPopoverFooter}>
+                                  {item.has_fx_exposure ? (
+                                    <span>
+                                      FX Compra ({fxPairLabel}):{" "}
+                                      {(isFxInverted
+                                        ? 1 / item.implied_entry_fx
+                                        : item.implied_entry_fx
+                                      ).toFixed(4)}{" "}
+                                      · Atual: {displayedSpotRate}
+                                    </span>
+                                  ) : (
+                                    <span>
+                                      Sem exposição cambial ({item.asset_currency} ={" "}
+                                      {viewCurrency})
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
                           </td>
 
                           <td style={styles.tdRight}>
@@ -1308,7 +1577,7 @@ export default function Dashboard({ user, onLogout }) {
                 </div>
               </div>
 
-              {/* Linha de Moeda do Ativo + Taxa de Câmbio Manual */}
+              {/* Linha de Moeda do Ativo + Taxa de Câmbio Manual com Dupla Seta */}
               <div style={styles.formRow}>
                 <div style={styles.field}>
                   <label style={styles.label}>MOEDA DO ATIVO</label>
@@ -1324,7 +1593,19 @@ export default function Dashboard({ user, onLogout }) {
 
                 <div style={styles.field}>
                   <label style={styles.label}>
-                    TAXA FX (EUR/USD)
+                    <span style={styles.fxLabelGroup}>
+                      <span>TAXA FX ({fxPairLabel})</span>
+                      {needsFxConversion && (
+                        <button
+                          type="button"
+                          onClick={handleToggleFxDirection}
+                          style={styles.fxSwapInlineBtn}
+                          title="Trocar entre EUR/USD e USD/EUR"
+                        >
+                          <SwapArrowIcon size={13} color="#10b981" />
+                        </button>
+                      )}
+                    </span>
                     <span style={styles.labelHint}>
                       {needsFxConversion ? "Manual" : "1:1"}
                     </span>
@@ -1334,7 +1615,7 @@ export default function Dashboard({ user, onLogout }) {
                     step="any"
                     required
                     disabled={!needsFxConversion}
-                    placeholder="1.0850"
+                    placeholder={isFxInverted ? "0.8916" : "1.1216"}
                     value={needsFxConversion ? txExchangeRate : "1.0000"}
                     onChange={(e) => setTxExchangeRate(e.target.value)}
                     style={{
@@ -1498,16 +1779,21 @@ const styles = {
     color: "#ffffff",
     letterSpacing: "-0.03em",
   },
-  fxRateBadge: {
+  fxRateBadgeBtn: {
     marginLeft: "0.5rem",
-    padding: "0.22rem 0.55rem",
+    padding: "0.25rem 0.6rem",
     borderRadius: "6px",
     backgroundColor: "#111e19",
     border: "1px solid #1f352c",
     fontFamily: "'JetBrains Mono', monospace",
     fontSize: "0.72rem",
     fontWeight: 600,
-    color: "#94a3b8",
+    color: "#cbd5e1",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "0.4rem",
+    cursor: "pointer",
+    transition: "border-color 0.15s ease, background-color 0.15s ease",
   },
   navActions: {
     display: "flex",
@@ -1681,6 +1967,10 @@ const styles = {
     color: "#ffffff",
     letterSpacing: "-0.02em",
   },
+  tableSubHint: {
+    fontSize: "0.76rem",
+    color: "#8e959e",
+  },
   donutContainer: {
     display: "flex",
     alignItems: "center",
@@ -1798,6 +2088,19 @@ const styles = {
     fontSize: "0.94rem",
     fontWeight: 700,
     color: "#ffffff",
+    display: "flex",
+    alignItems: "center",
+    gap: "0.4rem",
+  },
+  assetCurrTag: {
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: "0.64rem",
+    fontWeight: 600,
+    padding: "0.1rem 0.35rem",
+    borderRadius: "4px",
+    backgroundColor: "#14221d",
+    border: "1px solid #23382f",
+    color: "#94a3b8",
   },
   tdName: {
     fontSize: "0.8rem",
@@ -1817,6 +2120,67 @@ const styles = {
     borderRadius: "5px",
     fontSize: "0.78rem",
     fontWeight: 600,
+  },
+  fxTriggerBadge: {
+    fontSize: "0.72rem",
+    color: "#64748b",
+    padding: "0.05rem 0.25rem",
+    borderRadius: "4px",
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+  },
+  fxPopover: {
+    position: "absolute",
+    right: "0.75rem",
+    top: "88%",
+    zIndex: 60,
+    backgroundColor: "#0b1411",
+    border: "1px solid #263e34",
+    borderRadius: "10px",
+    padding: "0.75rem 0.9rem",
+    minWidth: "255px",
+    boxShadow: "0 12px 28px rgba(0, 0, 0, 0.8)",
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.42rem",
+    textAlign: "left",
+    pointerEvents: "none",
+  },
+  fxPopoverHeader: {
+    fontFamily: "'Inter', sans-serif",
+    fontSize: "0.68rem",
+    fontWeight: 700,
+    color: "#94a3b8",
+    letterSpacing: "0.04em",
+    textTransform: "uppercase",
+    borderBottom: "1px solid #1a2c24",
+    paddingBottom: "0.35rem",
+    marginBottom: "0.1rem",
+  },
+  fxPopoverRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: "0.75rem",
+  },
+  fxPopoverDim: {
+    fontFamily: "'Inter', sans-serif",
+    fontSize: "0.75rem",
+    color: "#a1a1aa",
+  },
+  fxPopoverVal: {
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: "0.76rem",
+    fontWeight: 600,
+    whiteSpace: "nowrap",
+  },
+  fxPopoverFooter: {
+    marginTop: "0.2rem",
+    paddingTop: "0.35rem",
+    borderTop: "1px dashed #1a2c24",
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: "0.68rem",
+    color: "#64748b",
+    textAlign: "right",
   },
   allocCell: {
     display: "flex",
@@ -1919,6 +2283,22 @@ const styles = {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
+  },
+  fxLabelGroup: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "0.35rem",
+  },
+  fxSwapInlineBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "0.12rem 0.32rem",
+    borderRadius: "5px",
+    backgroundColor: "#13221c",
+    border: "1px solid #233d32",
+    cursor: "pointer",
+    transition: "background-color 0.15s ease",
   },
   input: {
     width: "100%",
