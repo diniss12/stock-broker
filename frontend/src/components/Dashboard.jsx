@@ -60,18 +60,36 @@ function createDonutSlicePath(cx, cy, rOuter, rInner, startAngle, endAngle) {
   ].join(" ");
 }
 
-function formatCompactCurrency(val) {
-  if (val >= 1_000_000) return `$${(val / 1_000_000).toFixed(2)}M`;
-  if (val >= 1_000) return `$${(val / 1_000).toFixed(1)}K`;
-  return `$${val.toFixed(0)}`;
+function formatCompactCurrency(val, currency = "USD") {
+  const num = Number(val || 0);
+  const sym = currency === "EUR" ? "€" : "$";
+  if (num >= 1_000_000) {
+    return currency === "EUR"
+      ? `${(num / 1_000_000).toFixed(2)}M €`
+      : `$${(num / 1_000_000).toFixed(2)}M`;
+  }
+  if (num >= 1_000) {
+    return currency === "EUR"
+      ? `${(num / 1_000).toFixed(1)}K €`
+      : `$${(num / 1_000).toFixed(1)}K`;
+  }
+  return currency === "EUR" ? `${num.toFixed(0)} ${sym}` : `${sym}${num.toFixed(0)}`;
 }
 
-function formatMoney(val) {
+function formatMoney(val, currency = "USD") {
+  const num = Number(val || 0);
+  if (currency === "EUR") {
+    return new Intl.NumberFormat("pt-PT", {
+      style: "currency",
+      currency: "EUR",
+      minimumFractionDigits: 2,
+    }).format(num);
+  }
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,
-  }).format(val || 0);
+  }).format(num);
 }
 
 function parseAndValidateDate(inputStr) {
@@ -99,6 +117,12 @@ function parseAndValidateDate(inputStr) {
 }
 
 export default function Dashboard({ user, onLogout }) {
+  // Moeda da vista universal persistida em localStorage ("EUR" ou "USD")
+  const [viewCurrency, setViewCurrency] = useState(
+    () => localStorage.getItem("user_currency") || "EUR"
+  );
+  const [spotFxRate, setSpotFxRate] = useState(1.085);
+
   const [dateError, setDateError] = useState("");
   const [positions, setPositions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -112,12 +136,20 @@ export default function Dashboard({ user, onLogout }) {
   const [txName, setTxName] = useState("");
   const [txShares, setTxShares] = useState("");
   const [txPrice, setTxPrice] = useState("");
+  const [txAssetCurrency, setTxAssetCurrency] = useState("USD");
+  const [txExchangeRate, setTxExchangeRate] = useState("1.0850");
   const [txDate, setTxDate] = useState("");
 
   const [allSymbols, setAllSymbols] = useState([]);
   const [showDropdown, setShowDropdown] = useState(false);
 
   const hiddenDatePickerRef = useRef(null);
+
+  // Guarda a moeda escolhida sempre que o user alterna no topo
+  const handleCurrencyChange = (newCurr) => {
+    setViewCurrency(newCurr);
+    localStorage.setItem("user_currency", newCurr);
+  };
 
   // Carrega symbols.json logo no arranque para mapear os nomes tanto na tabela como no modal
   useEffect(() => {
@@ -217,6 +249,11 @@ export default function Dashboard({ user, onLogout }) {
 
       const data = await res.json();
       setPositions(Array.isArray(data.positions) ? data.positions : []);
+      if (data.fx_rate_eur_usd && Number(data.fx_rate_eur_usd) > 0) {
+        const fetchedRate = Number(data.fx_rate_eur_usd);
+        setSpotFxRate(fetchedRate);
+        setTxExchangeRate(fetchedRate.toFixed(4));
+      }
     } catch (err) {
       console.error("Erro ao carregar carteira:", err);
     } finally {
@@ -230,26 +267,47 @@ export default function Dashboard({ user, onLogout }) {
     return () => clearInterval(interval);
   }, [fetchPortfolio]);
 
+  // Cálculo da carteira reativo à vista selecionada (USD vs EUR)
   const portfolio = useMemo(() => {
+    const isEur = viewCurrency === "EUR";
+    const safeFx = spotFxRate > 0 ? spotFxRate : 1.085;
+
     let totalValue = 0;
     let totalInvested = 0;
-    let dayChangeDollar = 0;
+    let dayChangeAmount = 0;
 
     const enriched = positions.map((p, idx) => {
       const shares = Number(p.shares || 0);
-      const avgCost = Number(p.avg_cost || 0);
-      const currentPrice = Number(p.current_price || avgCost);
+
+      const avgCostUsd = Number(p.avg_cost_usd ?? p.avg_cost ?? 0);
+      const avgCostEur = Number(
+        p.avg_cost_eur ?? (avgCostUsd / safeFx)
+      );
+
+      const currentPriceUsd = Number(p.current_price_usd ?? p.current_price ?? avgCostUsd);
+      const currentPriceEur = Number(
+        p.current_price_eur ?? (currentPriceUsd / safeFx)
+      );
+
+      const avgCost = isEur ? avgCostEur : avgCostUsd;
+      const currentPrice = isEur ? currentPriceEur : currentPriceUsd;
       const dayChangePct = Number(p.day_change_pct || 0);
 
-      const marketValue = shares * currentPrice;
-      const invested = shares * avgCost;
+      const marketValue = isEur
+        ? Number(p.market_value_eur ?? shares * currentPriceEur)
+        : Number(p.market_value_usd ?? p.market_value ?? shares * currentPriceUsd);
+
+      const invested = isEur
+        ? Number(p.invested_eur ?? shares * avgCostEur)
+        : Number(p.invested_usd ?? shares * avgCostUsd);
+
       const pnlValue = marketValue - invested;
       const pnlPct = invested > 0 ? (pnlValue / invested) * 100 : 0;
       const posDayChange = marketValue * (dayChangePct / 100);
 
       totalValue += marketValue;
       totalInvested += invested;
-      dayChangeDollar += posDayChange;
+      dayChangeAmount += posDayChange;
 
       const cleanSym = (p.ticker || "").toUpperCase();
       const rawName = p.name && !p.name.endsWith("Equity") ? p.name : null;
@@ -294,18 +352,18 @@ export default function Dashboard({ user, onLogout }) {
 
     const totalPnlValue = totalValue - totalInvested;
     const totalPnlPct = totalInvested > 0 ? (totalPnlValue / totalInvested) * 100 : 0;
-    const dayChangePct = totalValue > 0 ? (dayChangeDollar / totalValue) * 100 : 0;
+    const dayChangePct = totalValue > 0 ? (dayChangeAmount / totalValue) * 100 : 0;
 
     return {
       totalValue,
       totalInvested,
       totalPnlValue,
       totalPnlPct,
-      dayChangeDollar,
+      dayChangeDollar: dayChangeAmount,
       dayChangePct,
       items: withAllocation,
     };
-  }, [positions, symbolsMap]);
+  }, [positions, symbolsMap, viewCurrency, spotFxRate]);
 
   const activeCenterItem = useMemo(() => {
     if (!portfolio.items.length) return null;
@@ -314,6 +372,37 @@ export default function Dashboard({ user, onLogout }) {
     }
     return portfolio.items[0];
   }, [portfolio, hoveredTicker]);
+
+  // Pré-visualização de conversão em tempo real no Modal
+  const modalPreview = useMemo(() => {
+    const s = parseFloat(txShares);
+    const p = parseFloat(txPrice);
+    const fx =
+      txAssetCurrency === viewCurrency ? 1.0 : parseFloat(txExchangeRate);
+
+    if (!s || s <= 0 || isNaN(p) || p < 0 || !fx || fx <= 0) {
+      return null;
+    }
+
+    const totalNative = s * p;
+    let totalUsd = totalNative;
+    let totalEur = totalNative;
+
+    if (txAssetCurrency === "USD") {
+      totalUsd = totalNative;
+      totalEur = txAssetCurrency === viewCurrency ? totalNative : totalNative / fx;
+    } else {
+      totalEur = totalNative;
+      totalUsd = txAssetCurrency === viewCurrency ? totalNative : totalNative * fx;
+    }
+
+    return {
+      totalNative,
+      totalUsd,
+      totalEur,
+      needsConversion: txAssetCurrency !== viewCurrency,
+    };
+  }, [txShares, txPrice, txAssetCurrency, viewCurrency, txExchangeRate]);
 
   function handleDateTextChange(e) {
     const raw = e.target.value;
@@ -360,6 +449,14 @@ export default function Dashboard({ user, onLogout }) {
       return;
     }
 
+    const isSameCurrency = txAssetCurrency === viewCurrency;
+    const parsedFx = isSameCurrency ? 1.0 : parseFloat(txExchangeRate);
+
+    if (!parsedFx || isNaN(parsedFx) || parsedFx <= 0) {
+      setApiError("Insere uma taxa de câmbio válida maior que 0.");
+      return;
+    }
+
     setSubmitting(true);
 
     const cleanSymbol = txTicker.trim().toUpperCase();
@@ -380,6 +477,9 @@ export default function Dashboard({ user, onLogout }) {
           type: txType,
           shares: numShares,
           price: numPrice,
+          asset_currency: txAssetCurrency,
+          base_currency: viewCurrency,
+          exchange_rate: parsedFx,
           date: isoDate,
           name: resolvedName,
         }),
@@ -407,6 +507,9 @@ export default function Dashboard({ user, onLogout }) {
 
   const maxPositionValue =
     portfolio.items.length > 0 ? portfolio.items[0].market_value : 1;
+
+  const currencySymbol = viewCurrency === "EUR" ? "€" : "$";
+  const needsFxConversion = txAssetCurrency !== viewCurrency;
 
   return (
     <div style={styles.page}>
@@ -474,14 +577,44 @@ export default function Dashboard({ user, onLogout }) {
             />
           </svg>
           <span style={styles.brandText}>StockBroker</span>
+
+          {/* Indicador discreto da Taxa BCE */}
+          <span style={styles.fxRateBadge} title="Taxa de referência BCE (EUR/USD)">
+            BCE EUR/USD: {spotFxRate.toFixed(4)}
+          </span>
         </div>
 
         <div style={styles.navActions}>
+          {/* Toggle Universal de Moeda (EUR / USD) */}
+          <div style={styles.currencyToggleGroup}>
+            <button
+              type="button"
+              onClick={() => handleCurrencyChange("EUR")}
+              style={{
+                ...styles.currencyToggleBtn,
+                ...(viewCurrency === "EUR" ? styles.currencyToggleBtnActive : {}),
+              }}
+            >
+              EUR €
+            </button>
+            <button
+              type="button"
+              onClick={() => handleCurrencyChange("USD")}
+              style={{
+                ...styles.currencyToggleBtn,
+                ...(viewCurrency === "USD" ? styles.currencyToggleBtnActive : {}),
+              }}
+            >
+              USD $
+            </button>
+          </div>
+
           <button
             type="button"
             onClick={() => {
               setApiError("");
               setDateError("");
+              setTxExchangeRate(spotFxRate.toFixed(4));
               setIsModalOpen(true);
             }}
             style={styles.primaryBtn}
@@ -505,10 +638,12 @@ export default function Dashboard({ user, onLogout }) {
         {/* 1. KPIs DE RESUMO ALINHADOS */}
         <section style={styles.kpiGrid}>
           <div style={styles.kpiCard}>
-            <span style={styles.kpiLabel}>VALOR TOTAL DA CARTEIRA</span>
+            <span style={styles.kpiLabel}>
+              VALOR TOTAL DA CARTEIRA ({viewCurrency})
+            </span>
             <div style={styles.kpiCenterRow}>
               <span style={styles.kpiBigValue}>
-                {formatMoney(portfolio.totalValue)}
+                {formatMoney(portfolio.totalValue, viewCurrency)}
               </span>
               {portfolio.items.length > 0 && (
                 <span
@@ -532,17 +667,25 @@ export default function Dashboard({ user, onLogout }) {
           </div>
 
           <div style={styles.kpiCard}>
-            <span style={styles.kpiLabel}>CAPITAL TOTAL INVESTIDO</span>
+            <span style={styles.kpiLabel}>
+              CAPITAL TOTAL INVESTIDO ({viewCurrency})
+            </span>
             <div style={styles.kpiCenterRow}>
               <span style={styles.kpiBigValue}>
-                {formatMoney(portfolio.totalInvested)}
+                {formatMoney(portfolio.totalInvested, viewCurrency)}
               </span>
             </div>
-            <span style={styles.kpiSub}>Custo médio ponderado acumulado</span>
+            <span style={styles.kpiSub}>
+              {viewCurrency === "EUR"
+                ? "Custo real acumulado (câmbio de compra)"
+                : "Custo médio ponderado acumulado"}
+            </span>
           </div>
 
           <div style={styles.kpiCard}>
-            <span style={styles.kpiLabel}>RENTABILIDADE TOTAL (P&L)</span>
+            <span style={styles.kpiLabel}>
+              RENTABILIDADE TOTAL (P&L {currencySymbol})
+            </span>
             <div style={styles.kpiCenterRow}>
               <span
                 style={{
@@ -551,7 +694,7 @@ export default function Dashboard({ user, onLogout }) {
                 }}
               >
                 {portfolio.totalPnlValue >= 0 ? "+" : ""}
-                {formatMoney(portfolio.totalPnlValue)}
+                {formatMoney(portfolio.totalPnlValue, viewCurrency)}
               </span>
               {portfolio.items.length > 0 && (
                 <span
@@ -599,7 +742,7 @@ export default function Dashboard({ user, onLogout }) {
                 </div>
                 <span style={styles.kpiSub}>
                   {portfolio.items[0].name} ·{" "}
-                  {formatMoney(portfolio.items[0].market_value)}
+                  {formatMoney(portfolio.items[0].market_value, viewCurrency)}
                 </span>
               </>
             ) : (
@@ -626,7 +769,10 @@ export default function Dashboard({ user, onLogout }) {
             </p>
             <button
               type="button"
-              onClick={() => setIsModalOpen(true)}
+              onClick={() => {
+                setTxExchangeRate(spotFxRate.toFixed(4));
+                setIsModalOpen(true);
+              }}
               style={{ ...styles.primaryBtn, marginTop: "0.75rem" }}
             >
               + Registar Primeira Compra
@@ -820,7 +966,7 @@ export default function Dashboard({ user, onLogout }) {
                             fontWeight: 500,
                           }}
                         >
-                          {formatMoney(activeCenterItem.market_value)}
+                          {formatMoney(activeCenterItem.market_value, viewCurrency)}
                         </text>
                       </g>
                     )}
@@ -830,7 +976,9 @@ export default function Dashboard({ user, onLogout }) {
 
               <div style={styles.panelCard}>
                 <div style={styles.panelHeader}>
-                  <h2 style={styles.panelTitle}>Carteira por Valor de Mercado</h2>
+                  <h2 style={styles.panelTitle}>
+                    Carteira por Valor de Mercado ({viewCurrency})
+                  </h2>
                 </div>
 
                 <div style={styles.barsList}>
@@ -876,7 +1024,7 @@ export default function Dashboard({ user, onLogout }) {
                             }}
                           />
                           <span style={styles.barValueLabel}>
-                            {formatCompactCurrency(item.market_value)}
+                            {formatCompactCurrency(item.market_value, viewCurrency)}
                           </span>
                         </div>
                       </div>
@@ -890,7 +1038,7 @@ export default function Dashboard({ user, onLogout }) {
             <section style={styles.tableCard}>
               <div style={styles.panelHeader}>
                 <h2 style={styles.panelTitle}>
-                  Posições Ativas & Rentabilidade
+                  Posições Ativas & Rentabilidade ({viewCurrency})
                 </h2>
               </div>
 
@@ -900,11 +1048,19 @@ export default function Dashboard({ user, onLogout }) {
                     <tr style={styles.theadRow}>
                       <th style={styles.th}>ATIVO</th>
                       <th style={styles.thRight}>QUANTIDADE</th>
-                      <th style={styles.thRight}>PREÇO MÉDIO</th>
-                      <th style={styles.thRight}>PREÇO ATUAL</th>
+                      <th style={styles.thRight}>
+                        PREÇO MÉDIO ({currencySymbol})
+                      </th>
+                      <th style={styles.thRight}>
+                        PREÇO ATUAL ({currencySymbol})
+                      </th>
                       <th style={styles.thRight}>VAR. DIÁRIA</th>
-                      <th style={styles.thRight}>VALOR MERCADO</th>
-                      <th style={styles.thRight}>LUCRO / P&L ($)</th>
+                      <th style={styles.thRight}>
+                        VALOR MERCADO ({currencySymbol})
+                      </th>
+                      <th style={styles.thRight}>
+                        LUCRO / P&L ({currencySymbol})
+                      </th>
                       <th style={styles.thRight}>ALOCAÇÃO</th>
                     </tr>
                   </thead>
@@ -934,7 +1090,7 @@ export default function Dashboard({ user, onLogout }) {
 
                           <td style={styles.tdRight}>{item.shares}</td>
                           <td style={styles.tdRight}>
-                            ${item.avg_cost.toFixed(2)}
+                            {formatMoney(item.avg_cost, viewCurrency)}
                           </td>
                           <td
                             style={{
@@ -943,7 +1099,7 @@ export default function Dashboard({ user, onLogout }) {
                               color: "#fff",
                             }}
                           >
-                            ${item.current_price.toFixed(2)}
+                            {formatMoney(item.current_price, viewCurrency)}
                           </td>
 
                           <td style={styles.tdRight}>
@@ -968,7 +1124,7 @@ export default function Dashboard({ user, onLogout }) {
                               color: "#f8fafc",
                             }}
                           >
-                            {formatMoney(item.market_value)}
+                            {formatMoney(item.market_value, viewCurrency)}
                           </td>
 
                           <td style={styles.tdRight}>
@@ -979,7 +1135,7 @@ export default function Dashboard({ user, onLogout }) {
                               }}
                             >
                               {isProfit ? "+" : ""}
-                              {formatMoney(item.pnl_value)}
+                              {formatMoney(item.pnl_value, viewCurrency)}
                             </div>
                             <div
                               style={{
@@ -1137,7 +1293,9 @@ export default function Dashboard({ user, onLogout }) {
                   />
                 </div>
                 <div style={styles.field}>
-                  <label style={styles.label}>PREÇO UNITÁRIO ($)</label>
+                  <label style={styles.label}>
+                    PREÇO UNITÁRIO ({txAssetCurrency === "EUR" ? "€" : "$"})
+                  </label>
                   <input
                     type="number"
                     step="any"
@@ -1149,6 +1307,63 @@ export default function Dashboard({ user, onLogout }) {
                   />
                 </div>
               </div>
+
+              {/* Linha de Moeda do Ativo + Taxa de Câmbio Manual */}
+              <div style={styles.formRow}>
+                <div style={styles.field}>
+                  <label style={styles.label}>MOEDA DO ATIVO</label>
+                  <select
+                    value={txAssetCurrency}
+                    onChange={(e) => setTxAssetCurrency(e.target.value)}
+                    style={styles.input}
+                  >
+                    <option value="USD">USD ($) — Bolsa EUA</option>
+                    <option value="EUR">EUR (€) — Bolsa Europa</option>
+                  </select>
+                </div>
+
+                <div style={styles.field}>
+                  <label style={styles.label}>
+                    TAXA FX (EUR/USD)
+                    <span style={styles.labelHint}>
+                      {needsFxConversion ? "Manual" : "1:1"}
+                    </span>
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    disabled={!needsFxConversion}
+                    placeholder="1.0850"
+                    value={needsFxConversion ? txExchangeRate : "1.0000"}
+                    onChange={(e) => setTxExchangeRate(e.target.value)}
+                    style={{
+                      ...styles.input,
+                      ...(!needsFxConversion ? styles.readOnlyInput : {}),
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Resumo de Conversão Cambial em Tempo Real */}
+              {modalPreview && (
+                <div style={styles.fxPreviewBox}>
+                  <div style={styles.fxPreviewRow}>
+                    <span style={styles.fxPreviewLabel}>Valor na Bolsa (USD):</span>
+                    <span style={styles.fxPreviewVal}>
+                      {formatMoney(modalPreview.totalUsd, "USD")}
+                    </span>
+                  </div>
+                  <div style={styles.fxPreviewRow}>
+                    <span style={styles.fxPreviewLabel}>
+                      Valor Equivalente (EUR):
+                    </span>
+                    <span style={{ ...styles.fxPreviewVal, color: "#10b981" }}>
+                      {formatMoney(modalPreview.totalEur, "EUR")}
+                    </span>
+                  </div>
+                </div>
+              )}
 
               <div style={styles.field}>
                 <label style={styles.label}>
@@ -1283,10 +1498,47 @@ const styles = {
     color: "#ffffff",
     letterSpacing: "-0.03em",
   },
+  fxRateBadge: {
+    marginLeft: "0.5rem",
+    padding: "0.22rem 0.55rem",
+    borderRadius: "6px",
+    backgroundColor: "#111e19",
+    border: "1px solid #1f352c",
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: "0.72rem",
+    fontWeight: 600,
+    color: "#94a3b8",
+  },
   navActions: {
     display: "flex",
     alignItems: "center",
     gap: "0.75rem",
+  },
+  currencyToggleGroup: {
+    display: "flex",
+    alignItems: "center",
+    backgroundColor: "#0d1713",
+    border: "1px solid #23382f",
+    borderRadius: "8px",
+    padding: "0.18rem",
+    gap: "0.2rem",
+  },
+  currencyToggleBtn: {
+    padding: "0.38rem 0.72rem",
+    borderRadius: "6px",
+    border: "none",
+    backgroundColor: "transparent",
+    color: "#8e959e",
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: "0.78rem",
+    fontWeight: 600,
+    cursor: "pointer",
+    transition: "all 0.15s ease",
+  },
+  currencyToggleBtnActive: {
+    backgroundColor: "#059669",
+    color: "#ffffff",
+    boxShadow: "0 1px 4px rgba(0, 0, 0, 0.35)",
   },
   primaryBtn: {
     padding: "0.56rem 1.15rem",
@@ -1591,18 +1843,18 @@ const styles = {
   },
   modalCard: {
     width: "100%",
-    maxWidth: "460px",
+    maxWidth: "480px",
     boxSizing: "border-box",
     backgroundColor: "#0e1714",
     border: "1px solid #23382f",
     borderRadius: "16px",
-    padding: "2rem",
+    padding: "1.85rem 2rem",
   },
   modalHeader: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: "1.25rem",
+    marginBottom: "1.1rem",
   },
   modalTitle: {
     fontFamily: "'Inter', sans-serif",
@@ -1631,10 +1883,10 @@ const styles = {
     display: "grid",
     gridTemplateColumns: "1fr 1fr",
     gap: "0.6rem",
-    marginBottom: "1.3rem",
+    marginBottom: "1.15rem",
   },
   switchBtn: {
-    padding: "0.65rem",
+    padding: "0.6rem",
     borderRadius: "8px",
     border: "1px solid #23352e",
     fontFamily: "'Inter', sans-serif",
@@ -1645,7 +1897,7 @@ const styles = {
   modalForm: {
     display: "flex",
     flexDirection: "column",
-    gap: "1rem",
+    gap: "0.9rem",
   },
   formRow: {
     display: "grid",
@@ -1656,7 +1908,7 @@ const styles = {
   field: {
     display: "flex",
     flexDirection: "column",
-    gap: "0.4rem",
+    gap: "0.35rem",
     minWidth: 0,
   },
   label: {
@@ -1664,18 +1916,21 @@ const styles = {
     fontSize: "0.72rem",
     fontWeight: 600,
     color: "#d4d4d8",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
   input: {
     width: "100%",
     boxSizing: "border-box",
-    height: "42px",
+    height: "41px",
     padding: "0 0.85rem",
     borderRadius: "7px",
     border: "1px solid #23382f",
     backgroundColor: "#080e0c",
     color: "#ffffff",
     fontFamily: "'Inter', sans-serif",
-    fontSize: "0.92rem",
+    fontSize: "0.9rem",
     outline: "none",
   },
   readOnlyInput: {
@@ -1685,8 +1940,31 @@ const styles = {
     cursor: "not-allowed",
     userSelect: "none",
   },
+  fxPreviewBox: {
+    padding: "0.65rem 0.85rem",
+    borderRadius: "8px",
+    backgroundColor: "#09110e",
+    border: "1px solid #1c2e26",
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.3rem",
+  },
+  fxPreviewRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    fontSize: "0.8rem",
+  },
+  fxPreviewLabel: {
+    color: "#8e959e",
+  },
+  fxPreviewVal: {
+    fontFamily: "'JetBrains Mono', monospace",
+    fontWeight: 600,
+    color: "#f4f4f5",
+  },
   submitModalBtn: {
-    marginTop: "0.5rem",
+    marginTop: "0.35rem",
     height: "44px",
     borderRadius: "8px",
     backgroundColor: "#059669",
@@ -1699,10 +1977,9 @@ const styles = {
   },
   labelHint: {
     fontFamily: "'JetBrains Mono', monospace",
-    fontSize: "0.68rem",
+    fontSize: "0.66rem",
     color: "#10b981",
     fontWeight: 500,
-    marginLeft: "0.35rem",
   },
   dateInputWrapper: {
     position: "relative",
@@ -1736,16 +2013,16 @@ const styles = {
     justifyContent: "center",
   },
   lightHintText: {
-    fontSize: "0.72rem",
+    fontSize: "0.71rem",
     color: "#52605b",
     lineHeight: 1.35,
-    marginTop: "0.15rem",
+    marginTop: "0.1rem",
   },
   errorTextTip: {
     fontSize: "0.72rem",
     color: "#ef4444",
     fontWeight: 500,
-    marginTop: "0.15rem",
+    marginTop: "0.1rem",
   },
   dropdownMenu: {
     position: "absolute",
