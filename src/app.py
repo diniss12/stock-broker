@@ -4,6 +4,7 @@ import json
 import time
 import uuid
 import urllib.request
+import urllib.parse
 import boto3
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
@@ -23,8 +24,11 @@ DEFAULT_TICKERS = [
 
 DEFAULT_EUR_USD_RATE = Decimal("1.0850")
 
-# Regex defensiva: apenas 1 a 6 letras maiúsculas, com sufixo de classe opcional (.A, .B)
-TICKER_REGEX = re.compile(r"^[A-Z]{1,6}(\.[A-Z]{1,2})?$")
+# Sufixos de bolsas europeias suportadas via Yahoo Finance
+EUROPEAN_SUFFIXES = (".DE", ".AS", ".LS", ".PA", ".MC", ".MI", ".L", ".SW", ".BR")
+
+# Regex atualizada: permite letras e números (ex: SXR8.DE, VWCE.DE, BRK.B) e sufixos até 3 letras
+TICKER_REGEX = re.compile(r"^[A-Z0-9]{1,10}(\.[A-Z]{1,3})?$")
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -68,10 +72,10 @@ def validate_transaction_payload(raw_body):
         if field not in body:
             return False, f"Campo obrigatório em falta: '{field}'."
 
-    # 2. Sanitização e validação de Ticker
+    # 2. Sanitização e validação de Ticker (suporta US e Europa ex: SXR8.DE, EDP.LS)
     raw_ticker = str(body["ticker"]).upper().strip()
     if not TICKER_REGEX.match(raw_ticker):
-        return False, "Ticker inválido. Usa apenas letras (ex: NVDA, AAPL, BRK.B) até 6 caracteres."
+        return False, "Ticker inválido. Usa apenas letras/números e sufixo de bolsa opcional (ex: NVDA, SXR8.DE, EDP.LS)."
 
     # 3. Tipo de transação
     tx_type = str(body.get("type", "BUY")).upper().strip()
@@ -140,7 +144,7 @@ def validate_transaction_payload(raw_body):
 
 
 # ==========================================
-# FUNÇÕES DE MERCADO (FINNHUB) E CÂMBIO (FRANKFURTER / BCE)
+# FUNÇÕES DE MERCADO (FINNHUB + YAHOO) E CÂMBIO (BCE)
 # ==========================================
 
 def fetch_ecb_eur_usd_rate() -> Decimal | None:
@@ -174,7 +178,7 @@ def fetch_ecb_eur_usd_rate() -> Decimal | None:
 
 def get_cached_eur_usd_rate() -> Decimal:
     """
-    Lê a taxa EUR/USD em cache no DynamoDB. Se tiver mais de 12 horas ou não existir,
+    Lê a taxa EUR/USD em cache no DynamoDB. Se não for de hoje,
     consulta a API Frankfurter (BCE) e atualiza a cache.
     """
     item = table.get_item(
@@ -200,7 +204,7 @@ def get_cached_eur_usd_rate() -> Decimal:
 
 
 def fetch_finnhub_quote(ticker: str) -> dict | None:
-    """Busca o preço atual, fecho anterior e variação diária na Finnhub."""
+    """Busca o preço atual na Finnhub (Ações e ETFs dos EUA, sempre em USD)."""
     ticker = ticker.upper().strip()
     url = f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_API_KEY}"
     try:
@@ -215,6 +219,8 @@ def fetch_finnhub_quote(ticker: str) -> dict | None:
                 "PK": "MARKET#PRICE",
                 "SK": f"TICKER#{ticker}",
                 "ticker": ticker,
+                "currency": "USD",
+                "source": "FINNHUB",
                 "price": Decimal(str(round(data["c"], 2))),
                 "prev_close": Decimal(str(round(data.get("pc") or 0, 2))),
                 "change": Decimal(str(round(data.get("d") or 0, 2))),
@@ -227,6 +233,132 @@ def fetch_finnhub_quote(ticker: str) -> dict | None:
     except Exception as e:
         print(f"Erro ao consultar Finnhub para {ticker}: {e}")
         return None
+
+
+def fetch_yahoo_quote(ticker: str) -> dict | None:
+    """Busca o preço atual no Yahoo Finance (ETFs e Ações Europeias ou Fallback)."""
+    ticker = ticker.upper().strip()
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(ticker)}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as res:
+            data = json.loads(res.read().decode("utf-8"))
+            results = data.get("chart", {}).get("result")
+            if not results:
+                return None
+
+            meta = results[0].get("meta", {})
+            raw_price = meta.get("regularMarketPrice")
+            if not raw_price or float(raw_price) <= 0:
+                return None
+
+            price_flt = float(raw_price)
+            prev_close_flt = float(
+                meta.get("chartPreviousClose") or meta.get("previousClose") or price_flt
+            )
+            change_flt = price_flt - prev_close_flt
+            change_pct_flt = ((change_flt / prev_close_flt) * 100.0) if prev_close_flt > 0 else 0.0
+
+            currency = str(meta.get("currency", "EUR")).upper()
+            # Na LSE (.L), alguns ativos vêm em GBp (pence); mantemos EUR/USD alinhado com a carteira
+            if currency not in ("EUR", "USD"):
+                currency = "EUR" if ticker.endswith((".DE", ".AS", ".LS", ".PA", ".MC", ".MI", ".BR")) else "USD"
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            return {
+                "PK": "MARKET#PRICE",
+                "SK": f"TICKER#{ticker}",
+                "ticker": ticker,
+                "currency": currency,
+                "source": "YAHOO",
+                "price": Decimal(str(round(price_flt, 2))),
+                "prev_close": Decimal(str(round(prev_close_flt, 2))),
+                "change": Decimal(str(round(change_flt, 2))),
+                "change_pct": Decimal(str(round(change_pct_flt, 2))),
+                "high": Decimal(str(round(float(meta.get("regularMarketDayHigh") or price_flt), 2))),
+                "low": Decimal(str(round(float(meta.get("regularMarketDayLow") or price_flt), 2))),
+                "price_date": now_iso[:10],
+                "updated_at": now_iso,
+            }
+    except Exception as e:
+        print(f"Erro ao consultar Yahoo Finance para {ticker}: {e}")
+        return None
+
+
+def fetch_market_quote(ticker: str) -> dict | None:
+    """
+    Roteador Inteligente de Cotações:
+    1. Tickers com sufixo de bolsa europeia (.DE, .LS, .AS, .L, etc.) vão direto ao Yahoo Finance.
+    2. Tickers norte-americanos vão à Finnhub primeiro, com fallback para o Yahoo Finance.
+    """
+    ticker = ticker.upper().strip()
+
+    if ticker.endswith(EUROPEAN_SUFFIXES):
+        return fetch_yahoo_quote(ticker)
+
+    quote = fetch_finnhub_quote(ticker)
+    if quote:
+        return quote
+
+    return fetch_yahoo_quote(ticker)
+
+
+def handle_search_symbols(query_str: str):
+    """
+    Pesquisa Just-in-Time no Yahoo Finance para encontrar ETFs europeus,
+    ações locais e globais que não estejam no symbols.json local.
+    """
+    q_clean = (query_str or "").strip()
+    if len(q_clean) < 1:
+        return response(200, [])
+
+    url = (
+        f"https://query2.finance.yahoo.com/v1/finance/search"
+        f"?q={urllib.parse.quote(q_clean)}&quotesCount=8&newsCount=0"
+    )
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=4) as res:
+            data = json.loads(res.read().decode("utf-8"))
+            quotes = data.get("quotes", [])
+
+            results = []
+            for item in quotes:
+                q_type = item.get("quoteType", "")
+                if q_type not in ("EQUITY", "ETF"):
+                    continue
+
+                sym = str(item.get("symbol", "")).upper().strip()
+                if not sym or not TICKER_REGEX.match(sym):
+                    continue
+
+                raw_name = item.get("shortname") or item.get("longname") or sym
+                exch_disp = item.get("exchDisp") or item.get("exchange") or ""
+                
+                # Sugere moeda automaticamente com base no sufixo europeu
+                is_eur_market = sym.endswith((".DE", ".AS", ".LS", ".PA", ".MC", ".MI", ".BR"))
+                suggested_currency = "EUR" if is_eur_market else "USD"
+
+                display_name = f"{raw_name} ({exch_disp})" if exch_disp else raw_name
+
+                results.append({
+                    "s": sym,
+                    "n": display_name,
+                    "c": suggested_currency,
+                    "t": q_type,
+                })
+
+            return response(200, results)
+    except Exception as e:
+        print(f"Erro no search Yahoo para '{q_clean}': {e}")
+        return response(200, [])
 
 
 def get_tracked_tickers() -> list[str]:
@@ -249,7 +381,11 @@ def get_tracked_tickers() -> list[str]:
     return sorted(combined)
 
 
-def ensure_ticker_tracked(ticker: str, fallback_price: Decimal | None = None) -> dict | None:
+def ensure_ticker_tracked(
+    ticker: str,
+    fallback_price: Decimal | None = None,
+    fallback_currency: str = "USD"
+) -> dict | None:
     """Garante que o ticker está na lista global e tem preço na cache MARKET#PRICE."""
     ticker = ticker.upper().strip()
     if not TICKER_REGEX.match(ticker):
@@ -272,7 +408,7 @@ def ensure_ticker_tracked(ticker: str, fallback_price: Decimal | None = None) ->
     if existing:
         return existing
 
-    quote = fetch_finnhub_quote(ticker)
+    quote = fetch_market_quote(ticker)
     if quote:
         table.put_item(Item=quote)
         return quote
@@ -283,6 +419,8 @@ def ensure_ticker_tracked(ticker: str, fallback_price: Decimal | None = None) ->
             "PK": "MARKET#PRICE",
             "SK": f"TICKER#{ticker}",
             "ticker": ticker,
+            "currency": fallback_currency,
+            "source": "FALLBACK",
             "price": fallback_price,
             "prev_close": fallback_price,
             "change": Decimal("0"),
@@ -303,11 +441,11 @@ def market_updater_handler(event, context):
 
     with table.batch_writer() as batch:
         for ticker in tickers:
-            quote = fetch_finnhub_quote(ticker)
+            quote = fetch_market_quote(ticker)
             if quote:
                 batch.put_item(Item=quote)
                 updated.append(quote)
-            time.sleep(0.1)
+            time.sleep(0.12)
 
     fx_rate = fetch_ecb_eur_usd_rate() or get_cached_eur_usd_rate()
 
@@ -346,9 +484,13 @@ def lambda_handler(event, context):
 
     route_key = event.get("routeKey")
 
-    # Rota pública sem autenticação
+    # Rotas públicas
     if route_key == "GET /market":
         return handle_get_market()
+
+    if route_key == "GET /search":
+        q_params = event.get("queryStringParameters") or {}
+        return handle_search_symbols(q_params.get("q", ""))
 
     # Extrai as claims validadas pelo API Gateway
     claims = (
@@ -392,7 +534,6 @@ def handle_post_transaction(user_id, raw_body):
     tx_date = validated_or_err["date"]
 
     # 2. Conversão exata da transação para ambos os referenciais (USD e EUR)
-    # Nota: exchange_rate representa EUR/USD (ex: 1 EUR = 1.0850 USD)
     if asset_currency == "USD":
         price_usd = price_native
         price_eur = (price_native / exchange_rate) if exchange_rate > 0 else price_native
@@ -414,7 +555,6 @@ def handle_post_transaction(user_id, raw_body):
     if current_pos:
         old_shares = current_pos["shares"]
         old_avg_usd = current_pos.get("avg_cost_usd", current_pos.get("avg_cost", Decimal("0")))
-        # Retrocompatibilidade: se posição antiga não tinha avg_cost_eur, assume old_avg_usd
         old_avg_eur = current_pos.get("avg_cost_eur", old_avg_usd)
         first_buy_date = current_pos.get("first_buy_date", tx_date)
         existing_name = current_pos.get("name", "")
@@ -454,7 +594,7 @@ def handle_post_transaction(user_id, raw_body):
             "ticker": ticker,
             "shares": new_shares,
             "asset_currency": asset_currency,
-            "avg_cost": round(new_avg_usd, 4),      # Mantido por compatibilidade
+            "avg_cost": round(new_avg_usd, 4),
             "avg_cost_usd": round(new_avg_usd, 4),
             "avg_cost_eur": round(new_avg_eur, 4),
             "invested_usd": round(new_shares * new_avg_usd, 2),
@@ -477,7 +617,7 @@ def handle_post_transaction(user_id, raw_body):
         "shares": shares,
         "asset_currency": asset_currency,
         "base_currency": base_currency,
-        "price": price_native,                      # Compatibilidade
+        "price": price_native,
         "price_native": price_native,
         "total_native": total_native,
         "exchange_rate": round(exchange_rate, 4),
@@ -492,8 +632,12 @@ def handle_post_transaction(user_id, raw_body):
 
     table.put_item(Item=tx_item)
 
-    # 5. Assegura que o ticker fica sob monitorização na Finnhub
-    ensure_ticker_tracked(ticker, fallback_price=price_usd)
+    # 5. Assegura que o ticker fica sob monitorização (Finnhub ou Yahoo) na moeda nativa correta
+    ensure_ticker_tracked(
+        ticker,
+        fallback_price=price_native,
+        fallback_currency=asset_currency
+    )
 
     return response(200, {
         "message": "Transação registada com sucesso.",
@@ -550,10 +694,9 @@ def handle_get_portfolio(user_id):
     for item in items:
         ticker = item["ticker"]
         shares = item["shares"]
-        asset_currency = item.get("asset_currency", "USD")
+        asset_currency = item.get("asset_currency", "USD").upper()
 
         avg_cost_usd = item.get("avg_cost_usd", item.get("avg_cost", Decimal("0")))
-        # Para posições antigas criadas antes do suporte EUR, converte pela taxa atual como fallback
         avg_cost_eur = item.get(
             "avg_cost_eur",
             (avg_cost_usd / fx_rate_eur_usd) if fx_rate_eur_usd > 0 else avg_cost_usd
@@ -561,16 +704,33 @@ def handle_get_portfolio(user_id):
         first_buy_date = item.get("first_buy_date")
         pos_name = item.get("name", "")
 
+        fallback_native = avg_cost_eur if asset_currency == "EUR" else avg_cost_usd
         price_item = market_map.get(ticker)
         if not price_item:
-            price_item = ensure_ticker_tracked(ticker, fallback_price=avg_cost_usd)
+            price_item = ensure_ticker_tracked(
+                ticker,
+                fallback_price=fallback_native,
+                fallback_currency=asset_currency
+            )
 
-        # Finnhub devolve cotações em USD
-        current_price_usd = price_item["price"] if price_item else avg_cost_usd
-        current_price_eur = (
-            (current_price_usd / fx_rate_eur_usd) if fx_rate_eur_usd > 0 else current_price_usd
-        )
-        day_change_pct = price_item.get("change_pct", Decimal("0")) if price_item else Decimal("0")
+        # Determina em que moeda está o preço guardado em MARKET#PRICE
+        if price_item:
+            quote_currency = str(price_item.get("currency", "USD")).upper()
+            raw_quote_price = price_item["price"]
+            day_change_pct = price_item.get("change_pct", Decimal("0"))
+
+            if quote_currency == "EUR":
+                current_price_eur = raw_quote_price
+                current_price_usd = raw_quote_price * fx_rate_eur_usd
+            else:
+                current_price_usd = raw_quote_price
+                current_price_eur = (
+                    (raw_quote_price / fx_rate_eur_usd) if fx_rate_eur_usd > 0 else raw_quote_price
+                )
+        else:
+            current_price_usd = avg_cost_usd
+            current_price_eur = avg_cost_eur
+            day_change_pct = Decimal("0")
 
         # Cálculos em USD
         market_value_usd = shares * current_price_usd
@@ -578,7 +738,7 @@ def handle_get_portfolio(user_id):
         pnl_value_usd = market_value_usd - invested_usd
         pnl_pct_usd = (pnl_value_usd / invested_usd * 100) if invested_usd > 0 else Decimal("0")
 
-        # Cálculos em EUR (com impacto cambial real face ao custo histórico em EUR)
+        # Cálculos em EUR (sem distorção para ativos nativos em EUR)
         market_value_eur = shares * current_price_eur
         invested_eur = shares * avg_cost_eur
         pnl_value_eur = market_value_eur - invested_eur
