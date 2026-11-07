@@ -10,15 +10,25 @@ const PALETTE = [
   "#14b8a6", "#ec4899", "#eab308", "#8b5cf6", "#6366f1"
 ];
 
+const EUR_SUFFIXES = [".DE", ".AS", ".LS", ".PA", ".MC", ".MI", ".BR"];
+
+function isEuropeanEurTicker(sym = "") {
+  const upper = sym.toUpperCase();
+  return EUR_SUFFIXES.some((suf) => upper.endsWith(suf));
+}
+
 function StockLogo({ ticker, size = 32, borderRadius = 8 }) {
-  const cleanTicker = encodeURIComponent(ticker);
-  const primarySrc = `https://assets.parqet.com/logos/symbol/${cleanTicker}?format=png`;
-  const fallbackSrc = `https://ui-avatars.com/api/?name=${cleanTicker}&background=18181b&color=fafafa&size=64&font-size=0.4&bold=true`;
+  const rawTicker = (ticker || "").trim();
+  const baseTicker = rawTicker.split(".")[0] || rawTicker;
+
+  const primarySrc = `https://assets.parqet.com/logos/symbol/${encodeURIComponent(rawTicker)}?format=png`;
+  const secondarySrc = `https://assets.parqet.com/logos/symbol/${encodeURIComponent(baseTicker)}?format=png`;
+  const fallbackSrc = `https://ui-avatars.com/api/?name=${encodeURIComponent(baseTicker)}&background=18181b&color=fafafa&size=64&font-size=0.4&bold=true`;
 
   return (
     <img
       src={primarySrc}
-      alt={ticker}
+      alt={rawTicker}
       style={{
         width: `${size}px`,
         height: `${size}px`,
@@ -28,8 +38,12 @@ function StockLogo({ ticker, size = 32, borderRadius = 8 }) {
         flexShrink: 0,
       }}
       onError={(e) => {
-        e.currentTarget.onerror = null;
-        e.currentTarget.src = fallbackSrc;
+        if (e.currentTarget.src === primarySrc && baseTicker !== rawTicker) {
+          e.currentTarget.src = secondarySrc;
+        } else {
+          e.currentTarget.onerror = null;
+          e.currentTarget.src = fallbackSrc;
+        }
       }}
     />
   );
@@ -166,6 +180,7 @@ export default function Dashboard({ user, onLogout }) {
   const [txDate, setTxDate] = useState("");
 
   const [allSymbols, setAllSymbols] = useState([]);
+  const [remoteResults, setRemoteResults] = useState([]);
   const [showDropdown, setShowDropdown] = useState(false);
 
   const hiddenDatePickerRef = useRef(null);
@@ -201,6 +216,29 @@ export default function Dashboard({ user, onLogout }) {
       .catch((err) => console.error("Erro ao carregar symbols.json:", err));
   }, []);
 
+  // Pesquisa em tempo real (Just-in-Time) no endpoint /search da API Gateway com debounce de 250ms
+  useEffect(() => {
+    const q = txTicker.trim();
+    if (!q || q.length < 2) {
+      setRemoteResults([]);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/search?q=${encodeURIComponent(q)}`);
+        if (res.ok) {
+          const data = await res.json();
+          setRemoteResults(Array.isArray(data) ? data : []);
+        }
+      } catch (err) {
+        console.error("Erro na pesquisa remota de símbolos:", err);
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [txTicker]);
+
   // Mapa rápido em memória O(1) de Ticker -> Nome da Empresa
   const symbolsMap = useMemo(() => {
     const map = {};
@@ -210,15 +248,21 @@ export default function Dashboard({ user, onLogout }) {
         map[item.s.toUpperCase()] = item.n;
       }
     }
+    for (let i = 0; i < remoteResults.length; i++) {
+      const item = remoteResults[i];
+      if (item.s && item.n && !map[item.s.toUpperCase()]) {
+        map[item.s.toUpperCase()] = item.n;
+      }
+    }
     return map;
-  }, [allSymbols]);
+  }, [allSymbols, remoteResults]);
 
-  // Filtro de recomendações ordenado por relevância
-  const filteredSymbols = useMemo(() => {
+  // Combina recomendações locais (symbols.json) com resultados em tempo real do Yahoo (/search)
+  const mergedSuggestions = useMemo(() => {
     const q = txTicker.trim().toUpperCase();
     if (!q || q.length < 1) return [];
 
-    const matches = [];
+    const localMatches = [];
 
     for (let i = 0; i < allSymbols.length; i++) {
       const item = allSymbols[i];
@@ -239,19 +283,40 @@ export default function Dashboard({ user, onLogout }) {
       }
 
       if (score > 0) {
-        matches.push({ item, score });
+        localMatches.push({ item, score });
       }
     }
 
-    matches.sort((a, b) => {
+    localMatches.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
       return a.item.s.localeCompare(b.item.s);
     });
 
-    return matches.slice(0, 6).map((m) => m.item);
-  }, [allSymbols, txTicker]);
+    const topLocal = localMatches.slice(0, 5).map((m) => m.item);
+    const seen = new Set();
+    const combined = [];
 
-  // Atualiza automaticamente o nome sempre que o txTicker muda
+    // Se houver correspondência exata ou começo direto nos resultados remotos (ex: SXR8.DE), dá prioridade
+    for (const rem of remoteResults) {
+      const sym = (rem.s || "").toUpperCase();
+      if (sym && !seen.has(sym)) {
+        combined.push(rem);
+        seen.add(sym);
+      }
+    }
+
+    for (const loc of topLocal) {
+      const sym = (loc.s || "").toUpperCase();
+      if (sym && !seen.has(sym)) {
+        combined.push(loc);
+        seen.add(sym);
+      }
+    }
+
+    return combined.slice(0, 7);
+  }, [allSymbols, txTicker, remoteResults]);
+
+  // Atualiza automaticamente o nome e a moeda sugerida sempre que o txTicker muda
   useEffect(() => {
     const clean = txTicker.trim().toUpperCase();
     if (!clean) {
@@ -259,14 +324,18 @@ export default function Dashboard({ user, onLogout }) {
       return;
     }
 
+    if (isEuropeanEurTicker(clean)) {
+      setTxAssetCurrency("EUR");
+    }
+
     if (symbolsMap[clean]) {
       setTxName(symbolsMap[clean]);
-    } else if (filteredSymbols.length > 0) {
-      setTxName(filteredSymbols[0].n || "");
+    } else if (mergedSuggestions.length > 0) {
+      setTxName(mergedSuggestions[0].n || "");
     } else {
       setTxName("");
     }
-  }, [txTicker, symbolsMap, filteredSymbols]);
+  }, [txTicker, symbolsMap, mergedSuggestions]);
 
   const getJwtToken = async () => {
     const session = await fetchAuthSession();
@@ -1007,8 +1076,8 @@ export default function Dashboard({ user, onLogout }) {
                         210,
                         slice.midAngle
                       );
-                      const cleanTicker = encodeURIComponent(slice.ticker);
-                      const logoUrl = `https://assets.parqet.com/logos/symbol/${cleanTicker}?format=png`;
+                      const baseTicker = (slice.ticker || "").split(".")[0];
+                      const logoUrl = `https://assets.parqet.com/logos/symbol/${encodeURIComponent(baseTicker)}?format=png`;
 
                       return (
                         <g
@@ -1497,7 +1566,7 @@ export default function Dashboard({ user, onLogout }) {
                   <input
                     type="text"
                     required
-                    placeholder="NVDA"
+                    placeholder="NVDA ou SXR8.DE"
                     autoComplete="off"
                     value={txTicker}
                     onFocus={() => setShowDropdown(true)}
@@ -1509,25 +1578,34 @@ export default function Dashboard({ user, onLogout }) {
                     style={styles.input}
                   />
 
-                  {showDropdown && filteredSymbols.length > 0 && (
+                  {showDropdown && mergedSuggestions.length > 0 && (
                     <div style={styles.dropdownMenu}>
-                      {filteredSymbols.map((item) => (
-                        <div
-                          key={item.s}
-                          style={styles.dropdownItem}
-                          onMouseDown={() => {
-                            setTxTicker(item.s);
-                            setTxName(item.n || "");
-                            setShowDropdown(false);
-                          }}
-                        >
-                          <StockLogo ticker={item.s} size={22} borderRadius={6} />
-                          <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                            <span style={styles.dropdownTicker}>{item.s}</span>
-                            <span style={styles.dropdownName}>{item.n}</span>
+                      {mergedSuggestions.map((item) => {
+                        const suggestedCurr =
+                          item.c || (isEuropeanEurTicker(item.s) ? "EUR" : "USD");
+
+                        return (
+                          <div
+                            key={item.s}
+                            style={styles.dropdownItem}
+                            onMouseDown={() => {
+                              setTxTicker(item.s);
+                              setTxName(item.n || "");
+                              setTxAssetCurrency(suggestedCurr);
+                              setShowDropdown(false);
+                            }}
+                          >
+                            <StockLogo ticker={item.s} size={22} borderRadius={6} />
+                            <div style={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                                <span style={styles.dropdownTicker}>{item.s}</span>
+                                <span style={styles.assetCurrTag}>{suggestedCurr}</span>
+                              </div>
+                              <span style={styles.dropdownName}>{item.n}</span>
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>

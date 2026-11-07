@@ -306,10 +306,19 @@ def fetch_market_quote(ticker: str) -> dict | None:
     return fetch_yahoo_quote(ticker)
 
 
+# Praças oficiais e reconhecidas que queremos aceitar
+ALLOWED_SUFFIXES = (".DE", ".LS", ".AS", ".PA", ".MC", ".MI", ".L", ".SW")
+
+# Mercados secundários a eliminar categoricamente
+EXCLUDED_SUFFIXES = (
+    ".F", ".DU", ".HM", ".HA", ".MU", ".SG", ".BE", 
+    ".IL", ".BD", ".XC", ".VI", ".AT", ".CO", ".ST", ".HE"
+)
+
 def handle_search_symbols(query_str: str):
     """
-    Pesquisa Just-in-Time no Yahoo Finance para encontrar ETFs europeus,
-    ações locais e globais que não estejam no symbols.json local.
+    Pesquisa Just-in-Time com eliminação total de praças regionais secundárias
+    e priorização das bolsas oficiais (EUA, XETRA, Lisboa, Euronext).
     """
     q_clean = (query_str or "").strip()
     if len(q_clean) < 1:
@@ -317,7 +326,7 @@ def handle_search_symbols(query_str: str):
 
     url = (
         f"https://query2.finance.yahoo.com/v1/finance/search"
-        f"?q={urllib.parse.quote(q_clean)}&quotesCount=8&newsCount=0"
+        f"?q={urllib.parse.quote(q_clean)}&quotesCount=25&newsCount=0"
     )
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -329,7 +338,8 @@ def handle_search_symbols(query_str: str):
             data = json.loads(res.read().decode("utf-8"))
             quotes = data.get("quotes", [])
 
-            results = []
+            valid_results = []
+
             for item in quotes:
                 q_type = item.get("quoteType", "")
                 if q_type not in ("EQUITY", "ETF"):
@@ -339,23 +349,39 @@ def handle_search_symbols(query_str: str):
                 if not sym or not TICKER_REGEX.match(sym):
                     continue
 
+                # 1. ELIMINAR se pertencer a qualquer praça regional secundária
+                if sym.endswith(EXCLUDED_SUFFIXES):
+                    continue
+
+                # 2. ELIMINAR tickers OTC americanos de 5 letras sem ponto terminados em Y ou F
+                # (ex: JRONY, JRONF que são apenas duplicados não oficiais de JMT.LS)
+                if len(sym) == 5 and "." not in sym and sym.endswith(("Y", "F")):
+                    continue
+
+                # 3. Aceitar apenas: Mercado Americano (sem ponto) OU Bolsas Europeias Permitidas
+                has_dot = "." in sym
+                if has_dot and not any(sym.endswith(suf) for suf in ALLOWED_SUFFIXES):
+                    continue
+
                 raw_name = item.get("shortname") or item.get("longname") or sym
                 exch_disp = item.get("exchDisp") or item.get("exchange") or ""
-                
-                # Sugere moeda automaticamente com base no sufixo europeu
-                is_eur_market = sym.endswith((".DE", ".AS", ".LS", ".PA", ".MC", ".MI", ".BR"))
-                suggested_currency = "EUR" if is_eur_market else "USD"
+
+                # Moeda sugerida: EUR para praças da Zona Euro, USD para o resto
+                is_eur = sym.endswith((".DE", ".LS", ".AS", ".PA", ".MC", ".MI"))
+                suggested_currency = "EUR" if is_eur else "USD"
 
                 display_name = f"{raw_name} ({exch_disp})" if exch_disp else raw_name
 
-                results.append({
+                valid_results.append({
                     "s": sym,
                     "n": display_name,
                     "c": suggested_currency,
                     "t": q_type,
                 })
 
-            return response(200, results)
+            # Retorna apenas os melhores resultados limpos (máx 6-8)
+            return response(200, valid_results[:8])
+
     except Exception as e:
         print(f"Erro no search Yahoo para '{q_clean}': {e}")
         return response(200, [])
