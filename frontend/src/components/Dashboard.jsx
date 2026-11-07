@@ -1112,20 +1112,23 @@ export default function Dashboard({ user, onLogout }) {
                               {slice.allocation_pct.toFixed(1)}%
                             </text>
                           )}
-
                           {slice.allocation_pct >= 3.5 && (
-                            <g
-                              transform={`translate(${badgePos.x}, ${badgePos.y})`}
-                            >
-                              <image
-                                href={logoUrl}
-                                x="-18"
-                                y="-18"
-                                width="36"
-                                height="36"
-                                clipPath="url(#cleanLogoClip)"
-                                preserveAspectRatio="xMidYMid slice"
-                              />
+                            <g transform={`translate(${badgePos.x}, ${badgePos.y})`}>
+                              {/* foreignObject permite colocar o componente StockLogo com todo o tratamento de erro dentro do SVG */}
+                              <foreignObject
+                                x="-17"
+                                y="-17"
+                                width="34"
+                                height="34"
+                                style={{ overflow: "visible" }}
+                              >
+                                <StockLogo
+                                  ticker={slice.ticker}
+                                  size={34}
+                                  borderRadius={8}
+                                />
+                              </foreignObject>
+
                               <text
                                 x="0"
                                 y="31"
